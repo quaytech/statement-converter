@@ -77,15 +77,27 @@ class BankStatementParser:
                 if not text:
                     continue
                 
+                # Debug: show a sample of text from each page
+                st.write(f"Sample text from page {page_num}: {text[:200]}...")
+                
                 # Try to extract tables first
                 tables = page.extract_tables()
                 if tables:
-                    transactions.extend(self._process_tables(tables))
+                    st.write(f"Found {len(tables)} tables on page {page_num}")
+                    page_transactions = self._process_tables(tables)
+                    st.write(f"Extracted {len(page_transactions)} transactions from tables")
+                    transactions.extend(page_transactions)
                 else:
                     # Fallback to text processing
-                    transactions.extend(self._process_text(text))
+                    st.write(f"No tables found, processing text on page {page_num}")
+                    page_transactions = self._process_text(text)
+                    st.write(f"Extracted {len(page_transactions)} transactions from text")
+                    transactions.extend(page_transactions)
         
-        return self._clean_and_format_transactions(transactions)
+        st.write(f"Total transactions before cleaning: {len(transactions)}")
+        cleaned = self._clean_and_format_transactions(transactions)
+        st.write(f"Total transactions after cleaning: {len(cleaned)}")
+        return cleaned
     
     def _process_tables(self, tables):
         transactions = []
@@ -119,12 +131,17 @@ class BankStatementParser:
         # Clean the row
         clean_row = [str(cell).strip() if cell else '' for cell in row]
         
-        # Find date - must be exact DD/MM/YYYY format
+        # Find date - flexible format matching like desktop version
         date = None
         for cell in clean_row:
-            date_match = re.search(r'\b(\d{2}/\d{2}/\d{4})\b', cell)
+            date_match = re.search(r'\b(\d{1,2}/\d{1,2}/\d{4})\b', cell)
             if date_match:
                 date = date_match.group(1)
+                # Normalize date format to DD/MM/YYYY
+                date_parts = date.split('/')
+                if len(date_parts) == 3:
+                    day, month, year = date_parts
+                    date = f"{day.zfill(2)}/{month.zfill(2)}/{year}"
                 break
         
         if not date:
@@ -204,7 +221,7 @@ class BankStatementParser:
                 continue
             
             # Must have a proper date to be a transaction
-            date_match = re.search(r'\b(\d{2}/\d{2}/\d{4})\b', line)
+            date_match = re.search(r'\b(\d{1,2}/\d{1,2}/\d{4})\b', line)
             if date_match:
                 transaction = self._parse_text_line(line)
                 if transaction:
@@ -213,12 +230,18 @@ class BankStatementParser:
         return transactions
     
     def _parse_text_line(self, line):
-        date_match = re.search(r'\b(\d{2}/\d{2}/\d{4})\b', line)
+        date_match = re.search(r'\b(\d{1,2}/\d{1,2}/\d{4})\b', line)
         if not date_match:
             return None
         
         date = date_match.group(1)
-        remainder = line.replace(date, '').strip()
+        # Normalize date format
+        date_parts = date.split('/')
+        if len(date_parts) == 3:
+            day, month, year = date_parts
+            date = f"{day.zfill(2)}/{month.zfill(2)}/{year}"
+        
+        remainder = line.replace(date_match.group(0), '').strip()
         
         # Remove reference numbers at the beginning
         remainder = re.sub(r'^\d{6}\s*', '', remainder)
