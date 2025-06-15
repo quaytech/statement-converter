@@ -53,8 +53,7 @@ class BankStatementParser:
     def __init__(self):
         self.credit_keywords = [
             'batch dep', 'deposit', 'business', 'herd2', 'netsurit', 
-            'top vending rebate', 'merch discount', 'reversal',
-            'transfer in', 'credit', 'salary', 'refund'
+            'top vending rebate', 'merch discount', 'reversal'
         ]
         
         self.debit_keywords = [
@@ -63,8 +62,7 @@ class BankStatementParser:
             'current ac', 'yoco', 'centracom', 'ankerdata', 'jpc',
             'instant payment', 'disputed debit', 'builders exp', 'checkers',
             'vets pantry', 'montrose plumbing', 'discovery life', 'absa bond',
-            'sandringham vet', 'woolworths', 'dis-chem', 'multichoice',
-            'atm', 'withdrawal', 'debit order'
+            'sandringham vet', 'woolworths', 'dis-chem', 'multichoice'
         ]
     
     def extract_transactions_from_pdf(self, pdf_file):
@@ -74,76 +72,20 @@ class BankStatementParser:
             for page_num, page in enumerate(pdf.pages, 1):
                 st.write(f"📄 Processing page {page_num}...")
                 
+                # Extract text with layout preservation
                 text = page.extract_text()
                 if not text:
                     continue
                 
-                # First, specifically look for opening balance
-                opening_balance = self._find_opening_balance_in_text(text, page_num)
-                if opening_balance:
-                    transactions.append(opening_balance)
-                
-                # Extract tables for regular transactions
+                # Try to extract tables first
                 tables = page.extract_tables()
                 if tables:
-                    page_transactions = self._process_tables(tables)
-                    # Filter out opening balance duplicates
-                    page_transactions = [t for t in page_transactions if 'opening balance' not in t['description'].lower()]
-                    transactions.extend(page_transactions)
-                
-                # Also try text processing
-                text_transactions = self._process_text(text)
-                text_transactions = [t for t in text_transactions if 'opening balance' not in t['description'].lower()]
-                transactions.extend(text_transactions)
+                    transactions.extend(self._process_tables(tables))
+                else:
+                    # Fallback to text processing
+                    transactions.extend(self._process_text(text))
         
         return self._clean_and_format_transactions(transactions)
-    
-    def _find_opening_balance_in_text(self, text, page_num):
-        lines = text.split('\n')
-        
-        for i, line in enumerate(lines):
-            line = line.strip()
-            if not line:
-                continue
-            
-            if 'opening balance' in line.lower():
-                date = None
-                balance = None
-                
-                search_start = max(0, i - 3)
-                search_end = min(len(lines), i + 4)
-                
-                for j in range(search_start, search_end):
-                    search_line = lines[j].strip()
-                    
-                    if not date:
-                        date_match = re.search(r'\b(\d{1,2}/\d{1,2}/\d{4})\b', search_line)
-                        if date_match:
-                            date = date_match.group(1)
-                            date_parts = date.split('/')
-                            if len(date_parts) == 3:
-                                day, month, year = date_parts
-                                date = f"{day.zfill(2)}/{month.zfill(2)}/{year}"
-                    
-                    numbers = re.findall(r'\b\d{1,3}(?:,\d{3})*\.?\d{2}\b', search_line)
-                    for num in numbers:
-                        num_value = float(num.replace(',', ''))
-                        if num_value > 100:
-                            balance = num
-                            break
-                    
-                    if date and balance:
-                        break
-                
-                if date and balance:
-                    return {
-                        'date': date,
-                        'description': 'Opening balance',
-                        'amount': '',
-                        'balance': balance.replace(',', '')
-                    }
-        
-        return None
     
     def _process_tables(self, tables):
         transactions = []
@@ -152,6 +94,7 @@ class BankStatementParser:
             if not table or len(table) < 2:
                 continue
             
+            # Look for header row
             header_row = None
             for i, row in enumerate(table):
                 if row and any(cell and 'date' in str(cell).lower() for cell in row):
@@ -161,71 +104,74 @@ class BankStatementParser:
             if header_row is None:
                 continue
             
+            # Process data rows
             for row in table[header_row + 1:]:
                 if not row or not any(row):
                     continue
                 
                 transaction = self._parse_table_row(row)
-                if transaction and 'opening balance' not in transaction['description'].lower():
+                if transaction:
                     transactions.append(transaction)
         
         return transactions
     
     def _parse_table_row(self, row):
+        # Clean the row
         clean_row = [str(cell).strip() if cell else '' for cell in row]
         
+        # Find date - must be exact DD/MM/YYYY format
         date = None
         for cell in clean_row:
-            date_match = re.search(r'\b(\d{1,2}/\d{1,2}/\d{4})\b', cell)
+            date_match = re.search(r'\b(\d{2}/\d{2}/\d{4})\b', cell)
             if date_match:
                 date = date_match.group(1)
-                date_parts = date.split('/')
-                if len(date_parts) == 3:
-                    day, month, year = date_parts
-                    date = f"{day.zfill(2)}/{month.zfill(2)}/{year}"
                 break
         
         if not date:
             return None
         
+        # Find description and amounts
         description = ''
         amounts = []
         
         for cell in clean_row:
-            if re.search(r'\b\d{1,2}/\d{1,2}/\d{4}\b', cell):
+            if re.search(r'\b\d{2}/\d{2}/\d{4}\b', cell):
                 continue
             
-            cell_numbers = re.findall(r'\b\d{1,3}(?:,\d{3})*\.?\d{0,2}\b', cell)
-            if cell_numbers:
-                amounts.extend(cell_numbers)
+            # Check if cell contains numbers
+            if re.search(r'\d{1,3}(?:,\d{3})*\.?\d{0,2}', cell):
+                numbers = re.findall(r'\d{1,3}(?:,\d{3})*\.?\d{0,2}', cell)
+                amounts.extend(numbers)
                 
-                desc_part = cell
-                for num in cell_numbers:
-                    desc_part = desc_part.replace(num, ' ')
-                desc_part = re.sub(r'[^\w\s]', ' ', desc_part)
-                desc_part = ' '.join(desc_part.split())
-                
+                desc_part = re.sub(r'\d{1,3}(?:,\d{3})*\.?\d{0,2}', '', cell).strip()
                 if desc_part and len(desc_part) > len(description):
                     description = desc_part
             else:
-                clean_text = re.sub(r'[^\w\s-]', ' ', cell)
-                clean_text = ' '.join(clean_text.split())
-                if len(clean_text) > len(description):
-                    description = clean_text
+                if len(cell) > len(description):
+                    description = cell
         
-        if not description or not amounts:
+        if not description:
             return None
         
+        # Determine amount and balance
         amount = ''
-        balance = amounts[-1].replace(',', '') if amounts else ''
+        balance = ''
         
-        if len(amounts) >= 2:
-            transaction_amount = amounts[-2].replace(',', '')
+        if amounts:
+            balance = amounts[-1].replace(',', '')
             
-            if self._is_credit(description):
-                amount = transaction_amount
-            else:
-                amount = f"-{transaction_amount}"
+            if len(amounts) >= 2:
+                transaction_amount = amounts[-2].replace(',', '')
+                
+                if self._is_credit(description):
+                    amount = transaction_amount
+                else:
+                    amount = f"-{transaction_amount}"
+            elif description.lower().strip() != 'opening balance':
+                if self._is_credit(description):
+                    amount = amounts[0].replace(',', '')
+                else:
+                    amount = f"-{amounts[0].replace(',', '')}"
         
         return {
             'date': date,
@@ -237,6 +183,7 @@ class BankStatementParser:
     def _process_text(self, text):
         transactions = []
         lines = text.split('\n')
+        
         in_transaction_section = False
         
         for line in lines:
@@ -244,65 +191,74 @@ class BankStatementParser:
             if not line:
                 continue
             
-            if any(keyword in line.lower() for keyword in ['transaction', 'date', 'description', 'balance']):
+            # Look for transaction section indicators
+            if any(keyword in line.lower() for keyword in ['tran list', 'date', 'description', 'balance']):
                 in_transaction_section = True
                 continue
             
+            # Stop at closing balance
             if 'closing balance' in line.lower():
-                continue
+                break
             
             if not in_transaction_section:
                 continue
             
-            if 'opening balance' in line.lower():
-                continue
-            
-            if re.search(r'\b\d{1,2}/\d{1,2}/\d{4}\b', line):
+            # Must have a proper date to be a transaction
+            date_match = re.search(r'\b(\d{2}/\d{2}/\d{4})\b', line)
+            if date_match:
                 transaction = self._parse_text_line(line)
-                if transaction and 'opening balance' not in transaction['description'].lower():
+                if transaction:
                     transactions.append(transaction)
         
         return transactions
     
     def _parse_text_line(self, line):
-        date_match = re.search(r'\b(\d{1,2}/\d{1,2}/\d{4})\b', line)
+        date_match = re.search(r'\b(\d{2}/\d{2}/\d{4})\b', line)
         if not date_match:
             return None
         
         date = date_match.group(1)
-        date_parts = date.split('/')
-        if len(date_parts) == 3:
-            day, month, year = date_parts
-            date = f"{day.zfill(2)}/{month.zfill(2)}/{year}"
+        remainder = line.replace(date, '').strip()
         
-        remainder = line.replace(date_match.group(0), '').strip()
+        # Remove reference numbers at the beginning
         remainder = re.sub(r'^\d{6}\s*', '', remainder)
         
-        numbers = re.findall(r'\b\d{1,3}(?:,\d{3})*\.?\d{0,2}\b', remainder)
+        # Find all numbers in the line
+        numbers = re.findall(r'\d{1,3}(?:,\d{3})*\.?\d{0,2}', remainder)
         
+        # Extract description by removing numbers
         description = remainder
         for num in numbers:
             description = description.replace(num, ' ')
-        description = re.sub(r'[^\w\s-]', ' ', description)
-        description = ' '.join(description.split())
+        description = re.sub(r'\s+', ' ', description).strip()
         
+        # Must have description and at least one number
         if not description or not numbers:
             return None
         
-        amount = ''
-        balance = numbers[-1].replace(',', '') if numbers else ''
+        # Filter out invalid descriptions (like page headers, etc.)
+        invalid_descriptions = ['statement', 'period', 'pages', 'total']
+        if any(invalid in description.lower() for invalid in invalid_descriptions):
+            return None
         
-        if len(numbers) >= 2:
-            transaction_amount = numbers[-2].replace(',', '')
+        amount = ''
+        balance = ''
+        
+        if numbers:
+            balance = numbers[-1].replace(',', '')
             
-            if self._is_credit(description):
-                amount = transaction_amount
-            else:
-                amount = f"-{transaction_amount}"
+            # For transactions other than opening balance, try to determine amount
+            if len(numbers) >= 2 and description.lower() != 'opening balance':
+                transaction_amount = numbers[-2].replace(',', '')
+                
+                if self._is_credit(description):
+                    amount = transaction_amount
+                else:
+                    amount = f"-{transaction_amount}"
         
         return {
             'date': date,
-            'description': description.strip(),
+            'description': description,
             'amount': amount,
             'balance': balance
         }
@@ -312,59 +268,23 @@ class BankStatementParser:
         return any(keyword in desc_lower for keyword in self.credit_keywords)
     
     def _clean_and_format_transactions(self, transactions):
+        # Remove duplicates
         seen = set()
         unique_transactions = []
         
         for txn in transactions:
-            key = f"{txn['date']}_{txn['description'][:20]}_{txn['balance']}"
-            if key not in seen and txn['date'] and txn['description']:
+            key = f"{txn['date']}_{txn['description']}_{txn['balance']}"
+            if key not in seen:
                 seen.add(key)
                 unique_transactions.append(txn)
         
+        # Sort by date
         try:
             unique_transactions.sort(key=lambda x: datetime.strptime(x['date'], '%d/%m/%Y'))
         except:
             pass
         
-        # Check if we have an opening balance
-        has_opening_balance = any('opening balance' in txn['description'].lower() for txn in unique_transactions)
-        
-        # If no opening balance found, try to calculate it
-        if not has_opening_balance and unique_transactions:
-            first_txn = unique_transactions[0]
-            try:
-                first_balance = float(first_txn['balance'].replace(',', ''))
-                first_amount = float(first_txn['amount'].replace(',', '')) if first_txn['amount'] else 0
-                calculated_opening = first_balance - first_amount
-                
-                if calculated_opening > 0:
-                    opening_balance = {
-                        'date': first_txn['date'],
-                        'description': 'Opening balance',
-                        'amount': '',
-                        'balance': f"{calculated_opening:.2f}"
-                    }
-                    unique_transactions.insert(0, opening_balance)
-            except:
-                pass
-        
-        # Ensure opening balance is first
-        opening_balance = None
-        other_transactions = []
-        
-        for txn in unique_transactions:
-            if 'opening balance' in txn['description'].lower():
-                if opening_balance is None:
-                    opening_balance = txn
-            else:
-                other_transactions.append(txn)
-        
-        final_transactions = []
-        if opening_balance:
-            final_transactions.append(opening_balance)
-        final_transactions.extend(other_transactions)
-        
-        return final_transactions
+        return unique_transactions
 
 # Initialize parser
 @st.cache_resource
@@ -465,13 +385,13 @@ def main():
                         with col2:
                             try:
                                 opening_balance = float(transactions[0]['balance'].replace(',', ''))
-                                closing_balance = float(transactions[-1]['balance'].replace(',', ''))
                                 st.metric("Opening Balance", f"R {opening_balance:,.2f}")
                             except:
                                 st.metric("Opening Balance", "N/A")
                         
                         with col3:
                             try:
+                                closing_balance = float(transactions[-1]['balance'].replace(',', ''))
                                 st.metric("Closing Balance", f"R {closing_balance:,.2f}")
                             except:
                                 st.metric("Closing Balance", "N/A")
