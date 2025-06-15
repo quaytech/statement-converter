@@ -190,7 +190,7 @@ class BankStatementParser:
         
         # Skip non-transaction rows like "Statement period"
         row_text = ' '.join(clean_row).lower()
-        if any(skip_phrase in row_text for skip_phrase in ['statement period', 'total pages', 'statementperiod', 'totalpages']):
+        if any(skip_phrase in row_text for skip_phrase in ['statement period', 'total pages']):
             return None
         
         description = ''
@@ -276,7 +276,7 @@ class BankStatementParser:
         
         # Skip non-transaction rows like "Statement period"
         line_lower = line.lower()
-        if any(skip_phrase in line_lower for skip_phrase in ['statement period', 'total pages', 'statementperiod', 'totalpages']):
+        if any(skip_phrase in line_lower for skip_phrase in ['statement period', 'total pages']):
             return None
         
         date = date_match.group(1)
@@ -326,11 +326,6 @@ class BankStatementParser:
         unique_transactions = []
         
         for txn in transactions:
-            # Additional filtering to remove statement period rows
-            desc_lower = txn['description'].lower()
-            if any(skip_phrase in desc_lower for skip_phrase in ['statement period', 'total pages', 'statementperiod', 'totalpages']):
-                continue
-                
             key = f"{txn['date']}_{txn['description'][:20]}_{txn['balance']}"
             if key not in seen and txn['date'] and txn['description']:
                 seen.add(key)
