@@ -49,6 +49,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# EXACT copy of the BankStatementParser from your working desktop version
 class BankStatementParser:
     def __init__(self):
         self.credit_keywords = [
@@ -65,10 +66,10 @@ class BankStatementParser:
             'sandringham vet', 'woolworths', 'dis-chem', 'multichoice'
         ]
     
-    def extract_transactions_from_pdf(self, pdf_file):
+    def extract_transactions_from_pdf(self, pdf_path):
         transactions = []
         
-        with pdfplumber.open(pdf_file) as pdf:
+        with pdfplumber.open(pdf_path) as pdf:
             for page_num, page in enumerate(pdf.pages, 1):
                 st.write(f"📄 Processing page {page_num}...")
                 
@@ -77,27 +78,15 @@ class BankStatementParser:
                 if not text:
                     continue
                 
-                # Debug: show a sample of text from each page
-                st.write(f"Sample text from page {page_num}: {text[:200]}...")
-                
                 # Try to extract tables first
                 tables = page.extract_tables()
                 if tables:
-                    st.write(f"Found {len(tables)} tables on page {page_num}")
-                    page_transactions = self._process_tables(tables)
-                    st.write(f"Extracted {len(page_transactions)} transactions from tables")
-                    transactions.extend(page_transactions)
+                    transactions.extend(self._process_tables(tables))
                 else:
                     # Fallback to text processing
-                    st.write(f"No tables found, processing text on page {page_num}")
-                    page_transactions = self._process_text(text)
-                    st.write(f"Extracted {len(page_transactions)} transactions from text")
-                    transactions.extend(page_transactions)
+                    transactions.extend(self._process_text(text))
         
-        st.write(f"Total transactions before cleaning: {len(transactions)}")
-        cleaned = self._clean_and_format_transactions(transactions)
-        st.write(f"Total transactions after cleaning: {len(cleaned)}")
-        return cleaned
+        return self._clean_and_format_transactions(transactions)
     
     def _process_tables(self, tables):
         transactions = []
@@ -131,17 +120,12 @@ class BankStatementParser:
         # Clean the row
         clean_row = [str(cell).strip() if cell else '' for cell in row]
         
-        # Find date - flexible format matching like desktop version
+        # Find date
         date = None
         for cell in clean_row:
-            date_match = re.search(r'\b(\d{1,2}/\d{1,2}/\d{4})\b', cell)
+            date_match = re.search(r'\b(\d{2}/\d{2}/\d{4})\b', cell)
             if date_match:
                 date = date_match.group(1)
-                # Normalize date format to DD/MM/YYYY
-                date_parts = date.split('/')
-                if len(date_parts) == 3:
-                    day, month, year = date_parts
-                    date = f"{day.zfill(2)}/{month.zfill(2)}/{year}"
                 break
         
         if not date:
@@ -208,20 +192,17 @@ class BankStatementParser:
             if not line:
                 continue
             
-            # Look for transaction section indicators
             if any(keyword in line.lower() for keyword in ['tran list', 'date', 'description', 'balance']):
                 in_transaction_section = True
                 continue
             
-            # Stop at closing balance
             if 'closing balance' in line.lower():
                 break
             
             if not in_transaction_section:
                 continue
             
-            # Must have a proper date to be a transaction
-            date_match = re.search(r'\b(\d{1,2}/\d{1,2}/\d{4})\b', line)
+            date_match = re.search(r'\b(\d{2}/\d{2}/\d{4})\b', line)
             if date_match:
                 transaction = self._parse_text_line(line)
                 if transaction:
@@ -230,38 +211,22 @@ class BankStatementParser:
         return transactions
     
     def _parse_text_line(self, line):
-        date_match = re.search(r'\b(\d{1,2}/\d{1,2}/\d{4})\b', line)
+        date_match = re.search(r'\b(\d{2}/\d{2}/\d{4})\b', line)
         if not date_match:
             return None
         
         date = date_match.group(1)
-        # Normalize date format
-        date_parts = date.split('/')
-        if len(date_parts) == 3:
-            day, month, year = date_parts
-            date = f"{day.zfill(2)}/{month.zfill(2)}/{year}"
-        
-        remainder = line.replace(date_match.group(0), '').strip()
-        
-        # Remove reference numbers at the beginning
+        remainder = line.replace(date, '').strip()
         remainder = re.sub(r'^\d{6}\s*', '', remainder)
         
-        # Find all numbers in the line
         numbers = re.findall(r'\d{1,3}(?:,\d{3})*\.?\d{0,2}', remainder)
         
-        # Extract description by removing numbers
         description = remainder
         for num in numbers:
             description = description.replace(num, ' ')
         description = re.sub(r'\s+', ' ', description).strip()
         
-        # Must have description and at least one number
-        if not description or not numbers:
-            return None
-        
-        # Filter out invalid descriptions (like page headers, etc.)
-        invalid_descriptions = ['statement', 'period', 'pages', 'total']
-        if any(invalid in description.lower() for invalid in invalid_descriptions):
+        if not description:
             return None
         
         amount = ''
@@ -270,7 +235,6 @@ class BankStatementParser:
         if numbers:
             balance = numbers[-1].replace(',', '')
             
-            # For transactions other than opening balance, try to determine amount
             if len(numbers) >= 2 and description.lower() != 'opening balance':
                 transaction_amount = numbers[-2].replace(',', '')
                 
@@ -291,7 +255,6 @@ class BankStatementParser:
         return any(keyword in desc_lower for keyword in self.credit_keywords)
     
     def _clean_and_format_transactions(self, transactions):
-        # Remove duplicates
         seen = set()
         unique_transactions = []
         
@@ -301,7 +264,6 @@ class BankStatementParser:
                 seen.add(key)
                 unique_transactions.append(txn)
         
-        # Sort by date
         try:
             unique_transactions.sort(key=lambda x: datetime.strptime(x['date'], '%d/%m/%Y'))
         except:
