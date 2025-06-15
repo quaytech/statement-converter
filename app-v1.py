@@ -188,11 +188,6 @@ class BankStatementParser:
         if not date:
             return None
         
-        # Skip non-transaction rows like "Statement period"
-        row_text = ' '.join(clean_row).lower()
-        if any(skip_phrase in row_text for skip_phrase in ['statement period', 'total pages']):
-            return None
-        
         description = ''
         amounts = []
         
@@ -272,11 +267,6 @@ class BankStatementParser:
     def _parse_text_line(self, line):
         date_match = re.search(r'\b(\d{1,2}/\d{1,2}/\d{4})\b', line)
         if not date_match:
-            return None
-        
-        # Skip non-transaction rows like "Statement period"
-        line_lower = line.lower()
-        if any(skip_phrase in line_lower for skip_phrase in ['statement period', 'total pages']):
             return None
         
         date = date_match.group(1)
