@@ -122,12 +122,15 @@ def extract_transactions_from_text(text):
         if not numbers:
             numbers = re.findall(r'\b\d{1,3}(?:,\d{3})*\.?\d{0,2}\b', remainder)
         
-        # Filter reasonable amounts
+        # Filter reasonable amounts and exclude small fee amounts
         filtered_numbers = []
         for num in numbers:
             try:
                 num_value = float(num.replace(',', ''))
-                if 0.01 <= num_value <= 999999999:
+                # Exclude typical fee amounts (4.30, 8.35, etc.) and very large numbers
+                if 10.0 <= num_value <= 999999999:  # Skip amounts under 10 (likely fees)
+                    filtered_numbers.append(num)
+                elif num_value >= 1000:  # Keep large amounts even if they could be fees
                     filtered_numbers.append(num)
             except:
                 continue
@@ -159,15 +162,19 @@ def extract_transactions_from_text(text):
         amount = None
         if len(filtered_numbers) >= 2:
             # Find transaction amount (not balance)
+            # Skip the first number if it's a small fee (4.30, 8.35, etc.)
             for num in filtered_numbers[:-1]:
                 try:
                     num_value = float(num.replace(',', ''))
-                    if num_value >= 1.0:  # Skip small fees
-                        if is_credit(description):
-                            amount = num_value
-                        else:
-                            amount = -num_value
-                        break
+                    # Skip typical bank fees
+                    if num_value in [4.30, 8.35, 19.00] or num_value < 10:
+                        continue
+                    # This is likely the real transaction amount
+                    if is_credit(description):
+                        amount = num_value
+                    else:
+                        amount = -num_value
+                    break
                 except:
                     continue
         elif len(filtered_numbers) == 1 and 'opening balance' in description.lower():
@@ -303,39 +310,61 @@ def main():
                     if len(st.session_state.selected_rows) != len(df):
                         st.session_state.selected_rows = [True] * len(df)
                     
-                    # Selection controls
-                    col1, col2 = st.columns([1, 4])
+                    # Create a display dataframe with selection checkboxes
+                    display_data = []
+                    for i, (_, row) in enumerate(df.iterrows()):
+                        amount_str = f"{row['Amount']:.2f}" if row['Amount'] is not None else ""
+                        balance_str = f"{row['Balance']:.2f}" if row['Balance'] is not None else ""
+                        
+                        display_data.append({
+                            'Select': st.session_state.selected_rows[i],
+                            'Date': row['Date'],
+                            'Description': row['Description'],
+                            'Amount': amount_str,
+                            'Balance': balance_str
+                        })
                     
+                    # Selection controls
+                    col1, col2 = st.columns([1, 3])
                     with col1:
-                        st.markdown("**Include**")
                         select_all = st.checkbox("Select All", value=all(st.session_state.selected_rows))
                         if select_all != all(st.session_state.selected_rows):
                             st.session_state.selected_rows = [select_all] * len(df)
                             st.rerun()
                     
-                    with col2:
-                        st.markdown("**Transaction Data**")
+                    # Create the editable dataframe
+                    edited_df = st.data_editor(
+                        pd.DataFrame(display_data),
+                        column_config={
+                            "Select": st.column_config.CheckboxColumn(
+                                "Include",
+                                help="Select transactions to include in CSV",
+                                default=True,
+                            ),
+                            "Date": st.column_config.TextColumn(
+                                "Date",
+                                disabled=True,
+                            ),
+                            "Description": st.column_config.TextColumn(
+                                "Description", 
+                                disabled=True,
+                            ),
+                            "Amount": st.column_config.TextColumn(
+                                "Amount",
+                                disabled=True,
+                            ),
+                            "Balance": st.column_config.TextColumn(
+                                "Balance",
+                                disabled=True,
+                            ),
+                        },
+                        disabled=["Date", "Description", "Amount", "Balance"],
+                        hide_index=True,
+                        use_container_width=True
+                    )
                     
-                    # Display each row with checkbox
-                    for i, (_, row) in enumerate(df.iterrows()):
-                        col1, col2 = st.columns([1, 4])
-                        
-                        with col1:
-                            st.session_state.selected_rows[i] = st.checkbox(
-                                f"Row {i+1}", 
-                                value=st.session_state.selected_rows[i],
-                                key=f"row_{i}"
-                            )
-                        
-                        with col2:
-                            bg_color = "#f0f8f0" if st.session_state.selected_rows[i] else "#fff0f0"
-                            amount_str = f"{row['Amount']:.2f}" if row['Amount'] is not None else ""
-                            balance_str = f"{row['Balance']:.2f}" if row['Balance'] is not None else ""
-                            st.markdown(f"""
-                            <div style="background-color: {bg_color}; padding: 0.5rem; border-radius: 0.25rem; margin-bottom: 0.25rem;">
-                                <strong>{row['Date']}</strong> | {row['Description']} | Amount: {amount_str} | Balance: {balance_str}
-                            </div>
-                            """, unsafe_allow_html=True)
+                    # Update session state based on edited dataframe
+                    st.session_state.selected_rows = edited_df['Select'].tolist()
                     
                     # Download selected transactions
                     selected_count = sum(st.session_state.selected_rows)
