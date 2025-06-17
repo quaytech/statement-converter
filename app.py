@@ -76,48 +76,27 @@ class BankStatementParser:
                 
                 text = page.extract_text()
                 if not text:
-                    st.write(f"❌ No text found on page {page_num}")
                     continue
-                
-                st.write(f"📝 Page {page_num} text preview (first 500 chars):")
-                st.text(text[:500])
                 
                 # First, specifically look for opening balance
                 opening_balance = self._find_opening_balance_in_text(text, page_num)
                 if opening_balance:
-                    st.write(f"✅ Found opening balance: {opening_balance}")
                     transactions.append(opening_balance)
                 
                 # Extract tables for regular transactions
                 tables = page.extract_tables()
                 if tables:
-                    st.write(f"📊 Found {len(tables)} tables on page {page_num}")
-                    for i, table in enumerate(tables):
-                        st.write(f"Table {i+1} has {len(table)} rows")
-                        if len(table) > 0:
-                            st.write(f"First row: {table[0]}")
-                        if len(table) > 1:
-                            st.write(f"Second row: {table[1]}")
-                    
                     page_transactions = self._process_tables(tables)
-                    st.write(f"📈 Extracted {len(page_transactions)} transactions from tables")
                     # Filter out opening balance duplicates
                     page_transactions = [t for t in page_transactions if 'opening balance' not in t['description'].lower()]
                     transactions.extend(page_transactions)
-                else:
-                    st.write(f"❌ No tables found on page {page_num}")
                 
                 # Also try text processing
                 text_transactions = self._process_text(text)
-                st.write(f"📝 Extracted {len(text_transactions)} transactions from text")
                 text_transactions = [t for t in text_transactions if 'opening balance' not in t['description'].lower()]
                 transactions.extend(text_transactions)
         
-        st.write(f"🎯 Total transactions before cleaning: {len(transactions)}")
-        cleaned_transactions = self._clean_and_format_transactions(transactions)
-        st.write(f"✨ Final cleaned transactions: {len(cleaned_transactions)}")
-        
-        return cleaned_transactions
+        return self._clean_and_format_transactions(transactions)
     
     def _find_opening_balance_in_text(self, text, page_num):
         lines = text.split('\n')
