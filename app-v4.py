@@ -52,9 +52,9 @@ st.markdown("""
 class BankStatementParser:
     def __init__(self):
         self.credit_keywords = [
-            'batch dep', 'deposit', 'business', 'herd2', 'herd', 'netsurit', 
+            'batch dep', 'deposit', 'business', 'herd2', 'netsurit', 
             'top vending rebate', 'merch discount', 'reversal',
-            'transfer in', 'credit', 'salary', 'refund', 'merch d'
+            'transfer in', 'credit', 'salary', 'refund'
         ]
         
         self.debit_keywords = [
@@ -181,13 +181,11 @@ class BankStatementParser:
         ]
         
         date = None
-        date_cell_index = None
-        for i, cell in enumerate(clean_row):
+        for cell in clean_row:
             for pattern in date_patterns:
                 date_match = re.search(pattern, str(cell))
                 if date_match:
                     date = date_match.group(1)
-                    date_cell_index = i
                     # Normalize date format
                     date_parts = date.split('/')
                     if len(date_parts) == 3:
@@ -204,82 +202,51 @@ class BankStatementParser:
         
         # Skip non-transaction rows like "Statement period"
         row_text = ' '.join(clean_row).lower()
-        if any(skip_phrase in row_text for skip_phrase in ['statement period', 'total pages', 'statementperiod', 'totalpages', 'balance brought forward', 'balance carried forward']):
+        if any(skip_phrase in row_text for skip_phrase in ['statement period', 'total pages', 'statementperiod', 'totalpages']):
             return None
         
-        # Extract description - usually in the cell after date or containing non-numeric text
         description = ''
         amounts = []
         
-        # New approach: handle both 2021 and 2023 formats
-        # Look for description in cells that contain text but not just numbers
-        for i, cell in enumerate(clean_row):
-            if i == date_cell_index:  # Skip the date cell
-                continue
-                
-            cell_str = str(cell).strip()
-            if not cell_str or cell_str == 'None':
+        for cell in clean_row:
+            if re.search(r'\b\d{1,2}/\d{1,2}/\d{4}\b', cell):
                 continue
             
-            # Extract numbers from this cell
-            cell_numbers = re.findall(r'\b\d{1,3}(?:,\d{3})*\.?\d{0,2}\b', cell_str)
-            
-            # If cell has numbers, add them to amounts list
+            cell_numbers = re.findall(r'\b\d{1,3}(?:,\d{3})*\.?\d{0,2}\b', cell)
             if cell_numbers:
                 amounts.extend(cell_numbers)
-            
-            # Check if this cell contains description text (not just numbers/codes)
-            desc_text = cell_str
-            for num in cell_numbers:
-                desc_text = desc_text.replace(num, ' ')
-            desc_text = re.sub(r'[^\w\s-]', ' ', desc_text)
-            desc_text = ' '.join(desc_text.split())
-            
-            # If this looks like a description (has meaningful text), use it
-            if desc_text and len(desc_text) > 3 and not desc_text.isdigit():
-                # Prefer longer descriptions or those with common transaction keywords
-                if (len(desc_text) > len(description) or 
-                    any(keyword in desc_text.lower() for keyword in ['batch dep', 'herd', 'business', 'pnp', 'opening balance'])):
-                    description = desc_text
+                
+                desc_part = cell
+                for num in cell_numbers:
+                    desc_part = desc_part.replace(num, ' ')
+                desc_part = re.sub(r'[^\w\s]', ' ', desc_part)
+                desc_part = ' '.join(desc_part.split())
+                
+                if desc_part and len(desc_part) > len(description):
+                    description = desc_part
+            else:
+                clean_text = re.sub(r'[^\w\s-]', ' ', cell)
+                clean_text = ' '.join(clean_text.split())
+                if len(clean_text) > len(description):
+                    description = clean_text
         
-        if not description and not amounts:
+        if not description or not amounts:
             return None
         
-        # If no proper description found, create one from available text
-        if not description:
-            non_date_text = []
-            for i, cell in enumerate(clean_row):
-                if i != date_cell_index and cell and str(cell).strip():
-                    cell_text = re.sub(r'\b\d{1,3}(?:,\d{3})*\.?\d{0,2}\b', '', str(cell)).strip()
-                    if cell_text:
-                        non_date_text.append(cell_text)
-            description = ' '.join(non_date_text[:2])  # Take first 2 non-date text parts
-        
-        # Determine amount and balance based on available numbers
         amount = ''
-        balance = ''
+        balance = amounts[-1].replace(',', '') if amounts else ''
         
-        if amounts:
-            # Balance is typically the last number
-            balance = amounts[-1].replace(',', '')
+        if len(amounts) >= 2:
+            transaction_amount = amounts[-2].replace(',', '')
             
-            # For amount calculation, look for transaction amounts
-            if len(amounts) >= 2:
-                # Try to identify the transaction amount (not the balance)
-                potential_amounts = amounts[:-1]  # All except the last (balance)
-                
-                if potential_amounts:
-                    transaction_amount = potential_amounts[-1].replace(',', '')
-                    
-                    # Determine if it's credit or debit based on description
-                    if self._is_credit(description):
-                        amount = transaction_amount
-                    else:
-                        amount = f"-{transaction_amount}"
+            if self._is_credit(description):
+                amount = transaction_amount
+            else:
+                amount = f"-{transaction_amount}"
         
         return {
             'date': date,
-            'description': description.strip() if description else 'Transaction',
+            'description': description.strip(),
             'amount': amount,
             'balance': balance
         }
