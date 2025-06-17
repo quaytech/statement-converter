@@ -6,6 +6,22 @@ import io
 import csv
 from datetime import datetime
 
+# Try to import OCR dependencies
+OCR_AVAILABLE = False
+OCR_ERROR = None
+
+try:
+    import pytesseract
+    from PIL import Image
+    import fitz  # PyMuPDF
+    # Test if tesseract is actually available
+    pytesseract.get_tesseract_version()
+    OCR_AVAILABLE = True
+except ImportError as e:
+    OCR_ERROR = f"Import error: {str(e)}"
+except Exception as e:
+    OCR_ERROR = f"Tesseract not available: {str(e)}"
+
 # Page configuration
 st.set_page_config(
     page_title="Bank Statement Converter",
@@ -122,9 +138,69 @@ class BankStatementParser:
                         st.write(f"Sample: {text[:200]}...")
                     else:
                         st.write("No text could be extracted at all")
-                    st.write("This appears to be a scanned/image-based PDF that requires OCR")
+                    
+                    # Try OCR if available
+                    if OCR_AVAILABLE:
+                        st.write(f"🔍 Attempting OCR on page {page_num}...")
+                        try:
+                            ocr_text = self._extract_text_with_ocr(pdf_file, page_num)
+                            if ocr_text and len(ocr_text.strip()) > 100:
+                                st.write(f"✅ OCR extracted {len(ocr_text)} characters from page {page_num}")
+                                
+                                # Process OCR text for transactions
+                                ocr_transactions = self._process_transaction_text(ocr_text)
+                                transactions.extend(ocr_transactions)
+                                
+                                # Also try table extraction on OCR text
+                                try:
+                                    # Convert OCR text back to a format suitable for table processing
+                                    ocr_lines = ocr_text.split('\n')
+                                    for line in ocr_lines:
+                                        if re.search(r'\d{1,2}/\d{1,2}/\d{4}', line):
+                                            transaction = self._parse_transaction_line(line)
+                                            if transaction:
+                                                transactions.append(transaction)
+                                except:
+                                    pass
+                            else:
+                                st.write(f"❌ OCR failed to extract meaningful text from page {page_num}")
+                        except Exception as e:
+                            st.write(f"❌ OCR error on page {page_num}: {str(e)}")
+                    else:
+                        st.warning(f"OCR not available. Error: {OCR_ERROR if OCR_ERROR else 'Unknown'}")
+                        st.write("This appears to be a scanned/image-based PDF that requires OCR")
         
         return self._clean_and_format_transactions(transactions)
+    
+    def _extract_text_with_ocr(self, pdf_file, page_num):
+        """Extract text using OCR for image-based PDFs"""
+        try:
+            # Reset file pointer to beginning
+            pdf_file.seek(0)
+            pdf_bytes = pdf_file.read()
+            
+            # Open with PyMuPDF
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            page = doc[page_num - 1]  # 0-indexed
+            
+            # Convert page to image with high resolution for better OCR
+            matrix = fitz.Matrix(3, 3)  # 3x zoom for better OCR quality
+            pix = page.get_pixmap(matrix=matrix)
+            img_data = pix.tobytes("png")
+            
+            # Convert to PIL Image
+            image = Image.open(io.BytesIO(img_data))
+            
+            # Perform OCR with specific config for tables
+            ocr_config = '--psm 6 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz.,-/: ()'
+            text = pytesseract.image_to_string(image, config=ocr_config)
+            
+            doc.close()
+            return text
+            
+        except Exception as e:
+            st.error(f"OCR error on page {page_num}: {str(e)}")
+            return None
     
     def _extract_text_from_chars(self, page):
         """Extract text from individual characters"""
@@ -433,8 +509,8 @@ def main():
         3. Download the CSV file<br>
         4. Open in Excel or any spreadsheet program<br><br>
         <strong>Supported formats:</strong><br>
-        • Text-based PDFs (preferred)<br>
-        • Image-based/scanned PDFs (may require OCR)
+        • Text-based PDFs (preferred - faster processing)<br>
+        • Image-based/scanned PDFs (uses OCR - slower but works)
     </div>
     """, unsafe_allow_html=True)
     
@@ -544,7 +620,7 @@ def main():
     <div style="text-align: center; color: #666;">
         <p>💡 Supports Nedbank and most standard bank statement formats</p>
         <p>🔒 Files are processed securely and not stored on our servers</p>
-        <p>📸 Automatically handles both text-based and image-based PDFs</p>
+        <p>📸 Automatically handles both text-based and image-based PDFs with OCR</p>
     </div>
     """, unsafe_allow_html=True)
 
