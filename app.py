@@ -16,65 +16,64 @@ def extract_text_ocr(pdf):
         all_text.append(text)
     return "\n".join(all_text)
 
-# --- Improved Transaction Parser ---
+# --- Transaction Parser: Start at "Opening balance" only ---
 def extract_transactions_from_text(text):
     transactions = []
-    transaction = None
+    in_transactions = False
     date_regex = r'(\d{2}/\d{2}/\d{4})'
-    trans_regex = re.compile(
-        r'^(?:\S+\s+)?'                        # Optional Tran list no (ignore)
-        r'(?P<date>\d{2}/\d{2}/\d{4})\s+'      # Date
-        r'(?P<desc>.+?)\s*'                    # Description
-        r'(?:(?P<fees>-?[\d,]+\.\d{2})\s+)?'   # Optional Fees (ignore)
-        r'(?:(?P<debit>-?[\d,]+\.\d{2})\s+)?'  # Optional Debit
-        r'(?:(?P<credit>-?[\d,]+\.\d{2})\s+)?' # Optional Credit
-        r'(?P<balance>-?[\d,]+\.\d{2})?'       # Optional Balance
-        r'$'
-    )
-
+    opening_balance_regex = re.compile(r'(\d{2}/\d{2}/\d{4}).*opening balance', re.IGNORECASE)
     lines = text.split('\n')
     for line in lines:
         line = line.strip()
-        if re.match(f'^(?:\S+\s+)?{date_regex}', line):
-            if transaction:
-                transactions.append(transaction)
-            m = trans_regex.match(line)
+        # Look for opening balance
+        if not in_transactions:
+            m = opening_balance_regex.search(line)
             if m:
-                transaction = {
-                    'Date': m.group('date'),
-                    'Description': m.group('desc').strip(),
-                    'Debit': m.group('debit') or '',
-                    'Credit': m.group('credit') or '',
-                    'Balance': m.group('balance') or ''
-                }
-            else:
-                # Fallback: try to extract what we can (date, description, balance)
-                parts = re.split(r'\s{2,}', line)
-                date = ''
-                desc = ''
-                balance = ''
-                if len(parts) >= 2:
-                    if re.match(date_regex, parts[0]):
-                        date = parts[0]
-                        desc = parts[1]
-                        if len(parts) > 2:
-                            balance = parts[-1]
-                    elif re.match(date_regex, parts[1]):
-                        date = parts[1]
-                        desc = parts[2] if len(parts) > 2 else ''
-                        balance = parts[-1] if len(parts) > 3 else ''
-                transaction = {
+                in_transactions = True
+                date = m.group(1)
+                # Get balance (last number on line)
+                amounts = re.findall(r'-?[\d,]+\.\d{2}', line)
+                balance = amounts[-1] if amounts else None
+                transactions.append({
                     'Date': date,
-                    'Description': desc.strip(),
+                    'Description': 'Opening balance',
                     'Debit': '',
                     'Credit': '',
                     'Balance': balance
-                }
-        else:
-            if transaction:
-                transaction['Description'] += ' ' + line
-    if transaction:
-        transactions.append(transaction)
+                })
+            continue
+        # Collect transactions (date anywhere in line)
+        date_match = re.search(date_regex, line)
+        if in_transactions and date_match:
+            date = date_match.group(1)
+            rest = line.split(date, 1)[1].strip()
+            # Find all amounts in the line
+            amounts = re.findall(r'-?[\d,]+\.\d{2}', rest)
+            desc = rest
+            balance = None
+            amount = None
+            if amounts:
+                balance = amounts[-1]
+                desc = rest.rsplit(balance, 1)[0].strip()
+                if len(amounts) > 1:
+                    amount = amounts[-2]
+            debit, credit = '', ''
+            if amount:
+                # Heuristic: negative means debit, otherwise credit
+                if '-' in amount:
+                    debit = amount
+                else:
+                    credit = amount
+            transactions.append({
+                'Date': date,
+                'Description': desc,
+                'Debit': debit,
+                'Credit': credit,
+                'Balance': balance
+            })
+        # Optional: Stop if you hit "closing balance" (uncomment if you want to stop parsing at that point)
+        # if in_transactions and "closing balance" in line.lower():
+        #     break
     return transactions
 
 # --- Clean & Format Transactions (Arrow/Streamlit-safe) ---
@@ -114,6 +113,7 @@ def clean_transactions(transactions):
 # --- Combined PDF Processor ---
 def extract_transactions(pdf_file):
     with pdfplumber.open(pdf_file) as pdf:
+        # Try regular text extraction first
         raw_text = []
         for page in pdf.pages:
             page_text = page.extract_text()
@@ -126,7 +126,7 @@ def extract_transactions(pdf_file):
         return extract_transactions_from_text(text)
 
 # --- Streamlit App ---
-st.title("Nedbank Statement Parser (Flexible, All Formats)")
+st.title("Nedbank Statement Parser (Reliable - Starts at Opening Balance)")
 
 uploaded_file = st.file_uploader("Upload Nedbank PDF", type=["pdf"])
 
