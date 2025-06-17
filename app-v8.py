@@ -5,22 +5,13 @@ import re
 import io
 import csv
 from datetime import datetime
-
-# Try to import OCR dependencies with better error handling
-OCR_AVAILABLE = False
-OCR_ERROR = None
-
 try:
     import pytesseract
     from PIL import Image
     import fitz  # PyMuPDF
-    # Test if tesseract is actually available
-    pytesseract.get_tesseract_version()
     OCR_AVAILABLE = True
-except ImportError as e:
-    OCR_ERROR = f"Import error: {str(e)}"
-except Exception as e:
-    OCR_ERROR = f"Tesseract not available: {str(e)}"
+except ImportError:
+    OCR_AVAILABLE = False
 
 # Page configuration
 st.set_page_config(
@@ -93,30 +84,8 @@ class BankStatementParser:
                 # Try text extraction first
                 text = page.extract_text()
                 
-                # Also try alternative text extraction methods
-                if not text or len(text.strip()) < 50:
-                    # Try extracting text with different settings
-                    try:
-                        text = page.extract_text(x_tolerance=3, y_tolerance=3)
-                    except:
-                        pass
-                
-                # Even more aggressive text extraction
-                if not text or len(text.strip()) < 50:
-                    try:
-                        # Extract text from individual characters
-                        chars = page.chars
-                        if chars:
-                            text = ''.join([char.get('text', '') for char in chars])
-                    except:
-                        pass
-                
-                # Check if we got meaningful text
-                has_meaningful_text = (text and 
-                                     len(text.strip()) > 50 and 
-                                     any(keyword in text.lower() for keyword in ['transaction', 'balance', 'date', 'account', 'nedbank', 'batch', 'dep']))
-                
-                if has_meaningful_text:
+                # Check if we got meaningful text (not just whitespace/minimal content)
+                if text and len(text.strip()) > 100 and any(keyword in text.lower() for keyword in ['transaction', 'balance', 'date', 'account']):
                     st.write(f"✅ Text-based PDF detected on page {page_num}")
                     
                     # First, specifically look for opening balance
@@ -148,42 +117,38 @@ class BankStatementParser:
                     
                     if OCR_AVAILABLE:
                         st.write("Attempting OCR extraction...")
-                        try:
-                            ocr_text = self._extract_text_with_ocr(pdf_file, page_num)
-                            if ocr_text:
-                                st.write(f"✅ OCR text extracted from page {page_num}")
-                                
-                                # First, look for opening balance
-                                opening_balance = self._find_opening_balance_in_text(ocr_text, page_num)
-                                if opening_balance:
-                                    transactions.append(opening_balance)
-                                
-                                # Process OCR text for transactions
-                                ocr_transactions = self._process_text_2023_format(ocr_text)
-                                ocr_transactions = [t for t in ocr_transactions if 'opening balance' not in t['description'].lower()]
-                                transactions.extend(ocr_transactions)
-                                
-                                # Fallback OCR text processing
-                                ocr_transactions = self._process_text(ocr_text)
-                                ocr_transactions = [t for t in ocr_transactions if 'opening balance' not in t['description'].lower()]
-                                transactions.extend(ocr_transactions)
-                            else:
-                                st.write(f"❌ OCR failed on page {page_num}")
-                        except Exception as e:
-                            st.error(f"OCR processing failed: {str(e)}")
+                        ocr_text = self._extract_text_with_ocr(pdf_file, page_num)
+                        if ocr_text:
+                            st.write(f"✅ OCR text extracted from page {page_num}")
+                            
+                            # First, look for opening balance
+                            opening_balance = self._find_opening_balance_in_text(ocr_text, page_num)
+                            if opening_balance:
+                                transactions.append(opening_balance)
+                            
+                            # Process OCR text for transactions
+                            ocr_transactions = self._process_text_2023_format(ocr_text)
+                            ocr_transactions = [t for t in ocr_transactions if 'opening balance' not in t['description'].lower()]
+                            transactions.extend(ocr_transactions)
+                            
+                            # Fallback OCR text processing
+                            ocr_transactions = self._process_text(ocr_text)
+                            ocr_transactions = [t for t in ocr_transactions if 'opening balance' not in t['description'].lower()]
+                            transactions.extend(ocr_transactions)
+                        else:
+                            st.write(f"❌ OCR failed on page {page_num}")
                     else:
-                        st.warning(f"""
+                        st.error("""
                         **Image-based PDF detected but OCR not available**
                         
-                        This PDF appears to be a scanned image. OCR is not available because:
-                        {OCR_ERROR if OCR_ERROR else "Unknown error"}
+                        This PDF appears to be a scanned image. To process image-based PDFs, please:
+                        1. Contact your deployment administrator to install OCR dependencies
+                        2. Or convert your PDF to a text-based PDF using online tools
+                        3. Or try a different PDF file
                         
-                        **Options:**
-                        1. Try converting your PDF to text-based format using online tools
-                        2. Use a different PDF file that's text-based (you can test by trying to select/copy text from it)
-                        3. Contact support for OCR installation assistance
+                        Required dependencies: pytesseract, PyMuPDF, tesseract-ocr
                         """)
-                        # Don't return empty - continue processing in case some pages work
+                        return []  # Return empty to show the error clearly
         
         return self._clean_and_format_transactions(transactions)
     
