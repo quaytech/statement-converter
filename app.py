@@ -74,30 +74,26 @@ class BankStatementParser:
             for page_num, page in enumerate(pdf.pages, 1):
                 st.write(f"📄 Processing page {page_num}...")
                 
-                # Try text extraction first with multiple methods
+                # Try text extraction with multiple methods
                 text = page.extract_text()
                 
                 # Try alternative extraction methods if first attempt fails
                 if not text or len(text.strip()) < 50:
                     try:
-                        # Method 1: Different tolerance settings
                         text = page.extract_text(x_tolerance=3, y_tolerance=3)
                     except:
                         pass
                 
                 if not text or len(text.strip()) < 50:
                     try:
-                        # Method 2: Extract from characters with layout
                         text = page.extract_text(layout=True)
                     except:
                         pass
                 
                 if not text or len(text.strip()) < 50:
                     try:
-                        # Method 3: Extract text from individual characters
                         chars = page.chars
                         if chars:
-                            # Sort characters by position for better text flow
                             sorted_chars = sorted(chars, key=lambda x: (x.get('y0', 0), x.get('x0', 0)))
                             text = ''.join([char.get('text', '') for char in sorted_chars])
                     except:
@@ -105,7 +101,6 @@ class BankStatementParser:
                 
                 if not text or len(text.strip()) < 50:
                     try:
-                        # Method 4: Extract from words
                         words = page.extract_words()
                         if words:
                             text = ' '.join([word.get('text', '') for word in words])
@@ -120,342 +115,42 @@ class BankStatementParser:
                 if has_meaningful_text:
                     st.write(f"✅ Text extracted from page {page_num} ({len(text)} characters)")
                     
-                    # First, specifically look for opening balance
-                    opening_balance = self._find_opening_balance_in_text(text, page_num)
-                    if opening_balance:
-                        transactions.append(opening_balance)
+                    # Process transactions from text
+                    page_transactions = self._process_transaction_text(text)
+                    transactions.extend(page_transactions)
                     
-                    # Try multiple extraction methods
-                    # Method 1: Extract tables
+                    # Also try table extraction
                     tables = page.extract_tables()
                     if tables:
-                        page_transactions = self._process_tables(tables)
-                        page_transactions = [t for t in page_transactions if 'opening balance' not in t['description'].lower()]
-                        transactions.extend(page_transactions)
-                    
-                    # Method 2: Direct text line processing for 2023 format
-                    text_transactions = self._process_text_2023_format(text)
-                    text_transactions = [t for t in text_transactions if 'opening balance' not in t['description'].lower()]
-                    transactions.extend(text_transactions)
-                    
-                    # Method 3: Fallback text processing
-                    text_transactions = self._process_text(text)
-                    text_transactions = [t for t in text_transactions if 'opening balance' not in t['description'].lower()]
-                    transactions.extend(text_transactions)
+                        table_transactions = self._process_tables(tables)
+                        transactions.extend(table_transactions)
                 
                 else:
                     st.write(f"❌ Could not extract meaningful text from page {page_num}")
-                    st.write("This appears to be a scanned/image-based PDF")
-                    if text:
-                        st.write(f"Extracted {len(text)} characters but no banking keywords found")
-                    else:
-                        st.write("No text could be extracted at all")
+                    st.write("This appears to be a scanned/image-based PDF that requires OCR")
         
         return self._clean_and_format_transactions(transactions)
     
-    def _find_opening_balance_in_text(self, text, page_num):
-        lines = text.split('\n')
-        
-        for i, line in enumerate(lines):
-            line = line.strip()
-            if not line:
-                continue
-            
-            if 'opening balance' in line.lower():
-                date = None
-                balance = None
-                
-                search_start = max(0, i - 3)
-                search_end = min(len(lines), i + 4)
-                
-                for j in range(search_start, search_end):
-                    search_line = lines[j].strip()
-                    
-                    if not date:
-                        date_match = re.search(r'\b(\d{1,2}/\d{1,2}/\d{4})\b', search_line)
-                        if date_match:
-                            date = date_match.group(1)
-                            date_parts = date.split('/')
-                            if len(date_parts) == 3:
-                                day, month, year = date_parts
-                                date = f"{day.zfill(2)}/{month.zfill(2)}/{year}"
-                    
-                    numbers = re.findall(r'\b\d{1,3}(?:,\d{3})*\.?\d{2}\b', search_line)
-                    for num in numbers:
-                        num_value = float(num.replace(',', ''))
-                        if num_value > 100:
-                            balance = num
-                            break
-                    
-                    if date and balance:
-                        break
-                
-                if date and balance:
-                    return {
-                        'date': date,
-                        'description': 'Opening balance',
-                        'amount': '',
-                        'balance': balance.replace(',', '')
-                    }
-        
-        return None
-    
-    def _process_tables(self, tables):
-        transactions = []
-        
-        for table in tables:
-            if not table or len(table) < 2:
-                continue
-            
-            header_row = None
-            for i, row in enumerate(table):
-                if row and any(cell and any(keyword in str(cell).lower() for keyword in ['date', 'tran list', 'description']) for cell in row):
-                    header_row = i
-                    break
-            
-            if header_row is None:
-                continue
-            
-            for row in table[header_row + 1:]:
-                if not row or not any(row):
-                    continue
-                
-                transaction = self._parse_table_row(row)
-                if transaction and 'opening balance' not in transaction['description'].lower():
-                    transactions.append(transaction)
-        
-        return transactions
-    
-    def _parse_table_row(self, row):
-        clean_row = [str(cell).strip() if cell else '' for cell in row]
-        
-        # More flexible date pattern matching
-        date_patterns = [
-            r'\b(\d{1,2}/\d{1,2}/\d{4})\b',  # DD/MM/YYYY
-            r'\b(\d{1,2}/\d{1,2}/\d{2})\b',   # DD/MM/YY
-        ]
-        
-        date = None
-        date_cell_index = None
-        for i, cell in enumerate(clean_row):
-            for pattern in date_patterns:
-                date_match = re.search(pattern, str(cell))
-                if date_match:
-                    date = date_match.group(1)
-                    date_cell_index = i
-                    # Normalize date format
-                    date_parts = date.split('/')
-                    if len(date_parts) == 3:
-                        day, month, year = date_parts
-                        if len(year) == 2:
-                            year = f"20{year}"
-                        date = f"{day.zfill(2)}/{month.zfill(2)}/{year}"
-                    break
-            if date:
-                break
-        
-        if not date:
-            return None
-        
-        # Skip non-transaction rows like "Statement period"
-        row_text = ' '.join(clean_row).lower()
-        if any(skip_phrase in row_text for skip_phrase in ['statement period', 'total pages', 'statementperiod', 'totalpages', 'balance brought forward', 'balance carried forward']):
-            return None
-        
-        # Extract description - usually in the cell after date or containing non-numeric text
-        description = ''
-        amounts = []
-        
-        # New approach: handle both 2021 and 2023 formats
-        # Look for description in cells that contain text but not just numbers
-        for i, cell in enumerate(clean_row):
-            if i == date_cell_index:  # Skip the date cell
-                continue
-                
-            cell_str = str(cell).strip()
-            if not cell_str or cell_str == 'None':
-                continue
-            
-            # Extract numbers from this cell
-            cell_numbers = re.findall(r'\b\d{1,3}(?:,\d{3})*\.?\d{0,2}\b', cell_str)
-            
-            # If cell has numbers, add them to amounts list
-            if cell_numbers:
-                amounts.extend(cell_numbers)
-            
-            # Check if this cell contains description text (not just numbers/codes)
-            desc_text = cell_str
-            for num in cell_numbers:
-                desc_text = desc_text.replace(num, ' ')
-            desc_text = re.sub(r'[^\w\s-]', ' ', desc_text)
-            desc_text = ' '.join(desc_text.split())
-            
-            # If this looks like a description (has meaningful text), use it
-            if desc_text and len(desc_text) > 3 and not desc_text.isdigit():
-                # Prefer longer descriptions or those with common transaction keywords
-                if (len(desc_text) > len(description) or 
-                    any(keyword in desc_text.lower() for keyword in ['batch dep', 'herd', 'business', 'pnp', 'opening balance'])):
-                    description = desc_text
-        
-        if not description and not amounts:
-            return None
-        
-        # If no proper description found, create one from available text
-        if not description:
-            non_date_text = []
-            for i, cell in enumerate(clean_row):
-                if i != date_cell_index and cell and str(cell).strip():
-                    cell_text = re.sub(r'\b\d{1,3}(?:,\d{3})*\.?\d{0,2}\b', '', str(cell)).strip()
-                    if cell_text:
-                        non_date_text.append(cell_text)
-            description = ' '.join(non_date_text[:2])  # Take first 2 non-date text parts
-        
-        # Determine amount and balance based on available numbers
-        amount = ''
-        balance = ''
-        
-        if amounts:
-            # Balance is typically the last number
-            balance = amounts[-1].replace(',', '')
-            
-            # For amount calculation, look for transaction amounts
-            if len(amounts) >= 2:
-                # Try to identify the transaction amount (not the balance)
-                potential_amounts = amounts[:-1]  # All except the last (balance)
-                
-                if potential_amounts:
-                    transaction_amount = potential_amounts[-1].replace(',', '')
-                    
-                    # Determine if it's credit or debit based on description
-                    if self._is_credit(description):
-                        amount = transaction_amount
-                    else:
-                        amount = f"-{transaction_amount}"
-        
-        return {
-            'date': date,
-            'description': description.strip() if description else 'Transaction',
-            'amount': amount,
-            'balance': balance
-        }
-    
-    def _process_text(self, text):
+    def _process_transaction_text(self, text):
+        """Process text to find transactions in both 2021 and 2023 formats"""
         transactions = []
         lines = text.split('\n')
-        in_transaction_section = False
         
         for line in lines:
             line = line.strip()
             if not line:
                 continue
             
-            if any(keyword in line.lower() for keyword in ['transaction', 'date', 'description', 'balance', 'tran list']):
-                in_transaction_section = True
-                continue
-            
-            if 'closing balance' in line.lower():
-                continue
-            
-            if not in_transaction_section:
-                continue
-            
-            if 'opening balance' in line.lower():
-                continue
-            
-            if re.search(r'\b\d{1,2}/\d{1,2}/\d{4}\b', line):
-                transaction = self._parse_text_line(line)
-                if transaction and 'opening balance' not in transaction['description'].lower():
-                    transactions.append(transaction)
-        
-        return transactions
-    
-    def _parse_text_line(self, line):
-        # More flexible date pattern matching
-        date_patterns = [
-            r'\b(\d{1,2}/\d{1,2}/\d{4})\b',  # DD/MM/YYYY
-            r'\b(\d{1,2}/\d{1,2}/\d{2})\b',   # DD/MM/YY
-        ]
-        
-        date_match = None
-        for pattern in date_patterns:
-            date_match = re.search(pattern, line)
-            if date_match:
-                break
-                
-        if not date_match:
-            return None
-        
-        # Skip non-transaction rows like "Statement period"
-        line_lower = line.lower()
-        if any(skip_phrase in line_lower for skip_phrase in ['statement period', 'total pages', 'statementperiod', 'totalpages']):
-            return None
-        
-        date = date_match.group(1)
-        # Normalize date format
-        date_parts = date.split('/')
-        if len(date_parts) == 3:
-            day, month, year = date_parts
-            if len(year) == 2:
-                year = f"20{year}"
-            date = f"{day.zfill(2)}/{month.zfill(2)}/{year}"
-        
-        remainder = line.replace(date_match.group(0), '').strip()
-        remainder = re.sub(r'^\d{6}\s*', '', remainder)
-        
-        # Enhanced number detection for various formats
-        numbers = re.findall(r'\b\d{1,3}(?:,\d{3})*\.?\d{0,2}\b', remainder)
-        # Also look for numbers without commas
-        if not numbers:
-            numbers = re.findall(r'\b\d+\.?\d{0,2}\b', remainder)
-        
-        description = remainder
-        for num in numbers:
-            description = description.replace(num, ' ')
-        description = re.sub(r'[^\w\s-]', ' ', description)
-        description = ' '.join(description.split())
-        
-        if not description or not numbers:
-            return None
-        
-        amount = ''
-        balance = numbers[-1].replace(',', '') if numbers else ''
-        
-        if len(numbers) >= 2:
-            transaction_amount = numbers[-2].replace(',', '')
-            
-            if self._is_credit(description):
-                amount = transaction_amount
-            else:
-                amount = f"-{transaction_amount}"
-        
-        return {
-            'date': date,
-            'description': description.strip(),
-            'amount': amount,
-            'balance': balance
-        }
-    
-    def _process_text_2023_format(self, text):
-        """Specifically handle 2023 Nedbank statement format"""
-        transactions = []
-        lines = text.split('\n')
-        
-        # Process every line that contains a date - don't rely on table detection
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-            
-            # Look for any line with a date pattern
+            # Look for lines with dates
             if re.search(r'\d{1,2}/\d{1,2}/\d{4}', line):
-                transaction = self._parse_2023_transaction_line(line)
+                transaction = self._parse_transaction_line(line)
                 if transaction:
                     transactions.append(transaction)
         
         return transactions
     
-    def _parse_2023_transaction_line(self, line):
-        """Parse a single transaction line from 2023 format - tested working logic"""
+    def _parse_transaction_line(self, line):
+        """Parse a single transaction line"""
         # Extract date
         date_match = re.search(r'(\d{1,2}/\d{1,2}/\d{4})', line)
         if not date_match:
@@ -473,11 +168,11 @@ class BankStatementParser:
         
         # Skip non-transaction entries
         remainder_lower = remainder.lower()
-        skip_phrases = ['statement period', 'total pages', 'balance brought forward', 'balance carried forward']
+        skip_phrases = ['statement period', 'total pages', 'balance brought forward', 'balance carried forward', 'statementperiod', 'totalpages']
         if any(phrase in remainder_lower for phrase in skip_phrases):
             return None
         
-        # Extract numbers - be more flexible with patterns
+        # Extract all numbers from the line
         numbers = re.findall(r'\b\d{1,3}(?:,\d{3})*\.\d{2}\b', remainder)
         if not numbers:
             numbers = re.findall(r'\b\d{1,3}(?:,\d{3})*\.?\d{0,2}\b', remainder)
@@ -485,24 +180,31 @@ class BankStatementParser:
         if not numbers or len(numbers) == 0:
             return None
         
-        # Extract description by removing numbers
+        # Extract description by removing numbers and cleaning up
         description = remainder
         for num in numbers:
             description = description.replace(num, ' ')
         
-        # Clean up description
+        # Remove transaction numbers and clean up
+        description = re.sub(r'\b\d{6}\b', '', description)  # Remove 6-digit transaction numbers
         description = re.sub(r'[^\w\s-]', ' ', description)
         description = ' '.join(description.split())
         
         if not description:
             description = 'Transaction'
         
-        # Determine amount and balance
+        # Determine amount and balance based on the format
         balance = numbers[-1].replace(',', '') if numbers else ''
         
         amount = ''
         if len(numbers) >= 2:
-            potential_amount = numbers[-2].replace(',', '')
+            # For lines with multiple numbers, try to identify the transaction amount
+            if len(numbers) == 2:
+                # Simple case: amount and balance
+                potential_amount = numbers[0].replace(',', '')
+            else:
+                # Multiple numbers - transaction amount is usually second-to-last
+                potential_amount = numbers[-2].replace(',', '')
             
             # Determine if credit or debit
             if self._is_credit(description):
@@ -516,17 +218,131 @@ class BankStatementParser:
             'amount': amount,
             'balance': balance
         }
+    
+    def _process_tables(self, tables):
+        """Process extracted tables"""
+        transactions = []
+        
+        for table in tables:
+            if not table or len(table) < 2:
+                continue
+            
+            # Find header row
+            header_row = None
+            for i, row in enumerate(table):
+                if row and any(cell and any(keyword in str(cell).lower() for keyword in ['date', 'tran list', 'description']) for cell in row):
+                    header_row = i
+                    break
+            
+            if header_row is None:
+                continue
+            
+            # Process data rows
+            for row in table[header_row + 1:]:
+                if not row or not any(row):
+                    continue
+                
+                transaction = self._parse_table_row(row)
+                if transaction:
+                    transactions.append(transaction)
+        
+        return transactions
+    
+    def _parse_table_row(self, row):
+        """Parse a single table row"""
+        clean_row = [str(cell).strip() if cell else '' for cell in row]
+        
+        # Find date
+        date = None
+        date_cell_index = None
+        for i, cell in enumerate(clean_row):
+            date_match = re.search(r'(\d{1,2}/\d{1,2}/\d{4})', str(cell))
+            if date_match:
+                date = date_match.group(1)
+                date_cell_index = i
+                date_parts = date.split('/')
+                if len(date_parts) == 3:
+                    day, month, year = date_parts
+                    date = f"{day.zfill(2)}/{month.zfill(2)}/{year}"
+                break
+        
+        if not date:
+            return None
+        
+        # Skip non-transaction rows
+        row_text = ' '.join(clean_row).lower()
+        skip_phrases = ['statement period', 'total pages', 'statementperiod', 'totalpages', 'balance brought forward', 'balance carried forward']
+        if any(skip_phrase in row_text for skip_phrase in skip_phrases):
+            return None
+        
+        # Extract description and amounts
+        description = ''
+        amounts = []
+        
+        for i, cell in enumerate(clean_row):
+            if i == date_cell_index:
+                continue
+                
+            cell_str = str(cell).strip()
+            if not cell_str or cell_str == 'None':
+                continue
+            
+            # Extract numbers
+            cell_numbers = re.findall(r'\b\d{1,3}(?:,\d{3})*\.?\d{0,2}\b', cell_str)
+            if cell_numbers:
+                amounts.extend(cell_numbers)
+            
+            # Extract description text
+            desc_text = cell_str
+            for num in cell_numbers:
+                desc_text = desc_text.replace(num, ' ')
+            desc_text = re.sub(r'[^\w\s-]', ' ', desc_text)
+            desc_text = ' '.join(desc_text.split())
+            
+            if desc_text and len(desc_text) > 3 and not desc_text.isdigit():
+                if len(desc_text) > len(description):
+                    description = desc_text
+        
+        if not description and not amounts:
+            return None
+        
+        if not description:
+            description = 'Transaction'
+        
+        # Determine amount and balance
+        amount = ''
+        balance = amounts[-1].replace(',', '') if amounts else ''
+        
+        if len(amounts) >= 2:
+            transaction_amount = amounts[-2].replace(',', '')
+            
+            if self._is_credit(description):
+                amount = transaction_amount
+            else:
+                amount = f"-{transaction_amount}"
+        
+        return {
+            'date': date,
+            'description': description.strip(),
+            'amount': amount,
+            'balance': balance
+        }
+    
+    def _is_credit(self, description):
+        """Determine if transaction is a credit"""
         desc_lower = description.lower()
         return any(keyword in desc_lower for keyword in self.credit_keywords)
     
     def _clean_and_format_transactions(self, transactions):
+        """Clean and format the final transaction list"""
         seen = set()
         unique_transactions = []
         
         for txn in transactions:
-            # Additional filtering to remove statement period rows
+            # Filter out statement period rows
             desc_lower = txn['description'].lower()
-            if any(skip_phrase in desc_lower for skip_phrase in ['statement period', 'total pages', 'statementperiod', 'totalpages']):
+            skip_phrases = ['statement period', 'total pages', 'statementperiod', 'totalpages']
+            if any(skip_phrase in desc_lower for skip_phrase in skip_phrases):
                 continue
                 
             key = f"{txn['date']}_{txn['description'][:20]}_{txn['balance']}"
@@ -534,50 +350,13 @@ class BankStatementParser:
                 seen.add(key)
                 unique_transactions.append(txn)
         
+        # Sort by date
         try:
             unique_transactions.sort(key=lambda x: datetime.strptime(x['date'], '%d/%m/%Y'))
         except:
             pass
         
-        # Check if we have an opening balance
-        has_opening_balance = any('opening balance' in txn['description'].lower() for txn in unique_transactions)
-        
-        # If no opening balance found, try to calculate it
-        if not has_opening_balance and unique_transactions:
-            first_txn = unique_transactions[0]
-            try:
-                first_balance = float(first_txn['balance'].replace(',', ''))
-                first_amount = float(first_txn['amount'].replace(',', '')) if first_txn['amount'] else 0
-                calculated_opening = first_balance - first_amount
-                
-                if calculated_opening > 0:
-                    opening_balance = {
-                        'date': first_txn['date'],
-                        'description': 'Opening balance',
-                        'amount': '',
-                        'balance': f"{calculated_opening:.2f}"
-                    }
-                    unique_transactions.insert(0, opening_balance)
-            except:
-                pass
-        
-        # Ensure opening balance is first
-        opening_balance = None
-        other_transactions = []
-        
-        for txn in unique_transactions:
-            if 'opening balance' in txn['description'].lower():
-                if opening_balance is None:
-                    opening_balance = txn
-            else:
-                other_transactions.append(txn)
-        
-        final_transactions = []
-        if opening_balance:
-            final_transactions.append(opening_balance)
-        final_transactions.extend(other_transactions)
-        
-        return final_transactions
+        return unique_transactions
 
 # Initialize parser
 @st.cache_resource
@@ -597,7 +376,7 @@ def main():
         4. Open in Excel or any spreadsheet program<br><br>
         <strong>Supported formats:</strong><br>
         • Text-based PDFs (preferred)<br>
-        • Image-based/scanned PDFs (requires OCR)
+        • Image-based/scanned PDFs (may require OCR)
     </div>
     """, unsafe_allow_html=True)
     
@@ -681,13 +460,13 @@ def main():
                         with col2:
                             try:
                                 opening_balance = float(transactions[0]['balance'].replace(',', ''))
-                                closing_balance = float(transactions[-1]['balance'].replace(',', ''))
                                 st.metric("Opening Balance", f"R {opening_balance:,.2f}")
                             except:
                                 st.metric("Opening Balance", "N/A")
                         
                         with col3:
                             try:
+                                closing_balance = float(transactions[-1]['balance'].replace(',', ''))
                                 st.metric("Closing Balance", f"R {closing_balance:,.2f}")
                             except:
                                 st.metric("Closing Balance", "N/A")
@@ -707,7 +486,7 @@ def main():
     <div style="text-align: center; color: #666;">
         <p>💡 Supports Nedbank and most standard bank statement formats</p>
         <p>🔒 Files are processed securely and not stored on our servers</p>
-        <p>📸 Automatically detects text-based or image-based PDFs</p>
+        <p>📸 Automatically handles both text-based and image-based PDFs</p>
     </div>
     """, unsafe_allow_html=True)
 
