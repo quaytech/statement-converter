@@ -5,13 +5,6 @@ import re
 import io
 import csv
 from datetime import datetime
-try:
-    import pytesseract
-    from PIL import Image
-    import fitz  # PyMuPDF
-    OCR_AVAILABLE = True
-except ImportError:
-    OCR_AVAILABLE = False
 
 # Page configuration
 st.set_page_config(
@@ -81,104 +74,34 @@ class BankStatementParser:
             for page_num, page in enumerate(pdf.pages, 1):
                 st.write(f"📄 Processing page {page_num}...")
                 
-                # Try text extraction first
                 text = page.extract_text()
+                if not text:
+                    continue
                 
-                # Check if we got meaningful text (not just whitespace/minimal content)
-                if text and len(text.strip()) > 100 and any(keyword in text.lower() for keyword in ['transaction', 'balance', 'date', 'account']):
-                    st.write(f"✅ Text-based PDF detected on page {page_num}")
-                    
-                    # First, specifically look for opening balance
-                    opening_balance = self._find_opening_balance_in_text(text, page_num)
-                    if opening_balance:
-                        transactions.append(opening_balance)
-                    
-                    # Try multiple extraction methods
-                    # Method 1: Extract tables
-                    tables = page.extract_tables()
-                    if tables:
-                        page_transactions = self._process_tables(tables)
-                        page_transactions = [t for t in page_transactions if 'opening balance' not in t['description'].lower()]
-                        transactions.extend(page_transactions)
-                    
-                    # Method 2: Direct text line processing for 2023 format
-                    text_transactions = self._process_text_2023_format(text)
-                    text_transactions = [t for t in text_transactions if 'opening balance' not in t['description'].lower()]
-                    transactions.extend(text_transactions)
-                    
-                    # Method 3: Fallback text processing
-                    text_transactions = self._process_text(text)
-                    text_transactions = [t for t in text_transactions if 'opening balance' not in t['description'].lower()]
-                    transactions.extend(text_transactions)
+                # First, specifically look for opening balance
+                opening_balance = self._find_opening_balance_in_text(text, page_num)
+                if opening_balance:
+                    transactions.append(opening_balance)
                 
-                else:
-                    # Likely image-based PDF, try OCR
-                    st.write(f"🔍 Image-based PDF detected on page {page_num}")
-                    
-                    if OCR_AVAILABLE:
-                        st.write("Attempting OCR extraction...")
-                        ocr_text = self._extract_text_with_ocr(pdf_file, page_num)
-                        if ocr_text:
-                            st.write(f"✅ OCR text extracted from page {page_num}")
-                            
-                            # First, look for opening balance
-                            opening_balance = self._find_opening_balance_in_text(ocr_text, page_num)
-                            if opening_balance:
-                                transactions.append(opening_balance)
-                            
-                            # Process OCR text for transactions
-                            ocr_transactions = self._process_text_2023_format(ocr_text)
-                            ocr_transactions = [t for t in ocr_transactions if 'opening balance' not in t['description'].lower()]
-                            transactions.extend(ocr_transactions)
-                            
-                            # Fallback OCR text processing
-                            ocr_transactions = self._process_text(ocr_text)
-                            ocr_transactions = [t for t in ocr_transactions if 'opening balance' not in t['description'].lower()]
-                            transactions.extend(ocr_transactions)
-                        else:
-                            st.write(f"❌ OCR failed on page {page_num}")
-                    else:
-                        st.error("""
-                        **Image-based PDF detected but OCR not available**
-                        
-                        This PDF appears to be a scanned image. To process image-based PDFs, please:
-                        1. Contact your deployment administrator to install OCR dependencies
-                        2. Or convert your PDF to a text-based PDF using online tools
-                        3. Or try a different PDF file
-                        
-                        Required dependencies: pytesseract, PyMuPDF, tesseract-ocr
-                        """)
-                        return []  # Return empty to show the error clearly
+                # Try multiple extraction methods
+                # Method 1: Extract tables
+                tables = page.extract_tables()
+                if tables:
+                    page_transactions = self._process_tables(tables)
+                    page_transactions = [t for t in page_transactions if 'opening balance' not in t['description'].lower()]
+                    transactions.extend(page_transactions)
+                
+                # Method 2: Direct text line processing for 2023 format
+                text_transactions = self._process_text_2023_format(text)
+                text_transactions = [t for t in text_transactions if 'opening balance' not in t['description'].lower()]
+                transactions.extend(text_transactions)
+                
+                # Method 3: Fallback text processing
+                text_transactions = self._process_text(text)
+                text_transactions = [t for t in text_transactions if 'opening balance' not in t['description'].lower()]
+                transactions.extend(text_transactions)
         
         return self._clean_and_format_transactions(transactions)
-    
-    def _extract_text_with_ocr(self, pdf_file, page_num):
-        """Extract text using OCR for image-based PDFs"""
-        try:
-            # Reset file pointer
-            pdf_file.seek(0)
-            pdf_bytes = pdf_file.read()
-            
-            # Open with PyMuPDF
-            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-            page = doc[page_num - 1]  # 0-indexed
-            
-            # Convert page to image
-            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2x zoom for better OCR
-            img_data = pix.tobytes("png")
-            
-            # Convert to PIL Image
-            image = Image.open(io.BytesIO(img_data))
-            
-            # Perform OCR
-            text = pytesseract.image_to_string(image, config='--psm 6')
-            
-            doc.close()
-            return text
-            
-        except Exception as e:
-            st.error(f"OCR error on page {page_num}: {str(e)}")
-            return None
     
     def _find_opening_balance_in_text(self, text, page_num):
         lines = text.split('\n')
@@ -467,13 +390,32 @@ class BankStatementParser:
         transactions = []
         lines = text.split('\n')
         
-        # Process every line that contains a date - don't rely on table detection
+        # Look for the transaction table section
+        in_transaction_table = False
+        
         for line in lines:
             line = line.strip()
             if not line:
                 continue
             
-            # Look for any line with a date pattern
+            # Start processing when we hit the transaction table
+            if 'tran list no' in line.lower() and 'date' in line.lower():
+                in_transaction_table = True
+                continue
+            
+            # Stop at closing balance or end of transactions
+            if 'closing balance' in line.lower() or 'balance carried forward' in line.lower():
+                in_transaction_table = False
+                continue
+            
+            if not in_transaction_table:
+                continue
+            
+            # Skip header-like lines
+            if any(skip in line.lower() for skip in ['fees (r)', 'debits (r)', 'credits (r)', 'balance (r)', 'description']):
+                continue
+            
+            # Parse transaction lines that contain dates
             if re.search(r'\d{1,2}/\d{1,2}/\d{4}', line):
                 transaction = self._parse_2023_transaction_line(line)
                 if transaction:
@@ -482,7 +424,7 @@ class BankStatementParser:
         return transactions
     
     def _parse_2023_transaction_line(self, line):
-        """Parse a single transaction line from 2023 format - tested working logic"""
+        """Parse a single transaction line from 2023 format"""
         # Extract date
         date_match = re.search(r'(\d{1,2}/\d{1,2}/\d{4})', line)
         if not date_match:
@@ -495,21 +437,21 @@ class BankStatementParser:
             day, month, year = date_parts
             date = f"{day.zfill(2)}/{month.zfill(2)}/{year}"
         
-        # Remove date from line
-        remainder = line.replace(date_match.group(0), '').strip()
+        # Remove date from line to get the rest
+        remainder = line.replace(date_match.group(0), '', 1).strip()
         
         # Skip non-transaction entries
         remainder_lower = remainder.lower()
-        skip_phrases = ['statement period', 'total pages', 'balance brought forward', 'balance carried forward']
-        if any(phrase in remainder_lower for phrase in skip_phrases):
+        if any(skip_phrase in remainder_lower for skip_phrase in ['statement period', 'total pages', 'balance brought forward', 'balance carried forward']):
             return None
         
-        # Extract numbers - be more flexible with patterns
-        numbers = re.findall(r'\b\d{1,3}(?:,\d{3})*\.\d{2}\b', remainder)
+        # Extract all numbers from the line
+        numbers = re.findall(r'\b\d{1,3}(?:,\d{3})*\.?\d{2}\b', remainder)
         if not numbers:
+            # Try without requiring decimals
             numbers = re.findall(r'\b\d{1,3}(?:,\d{3})*\.?\d{0,2}\b', remainder)
         
-        if not numbers or len(numbers) == 0:
+        if not numbers:
             return None
         
         # Extract description by removing numbers
@@ -525,10 +467,12 @@ class BankStatementParser:
             description = 'Transaction'
         
         # Determine amount and balance
+        # In 2023 format, balance is typically the last number
         balance = numbers[-1].replace(',', '') if numbers else ''
         
         amount = ''
         if len(numbers) >= 2:
+            # Look for transaction amount (usually second-to-last or a specific pattern)
             potential_amount = numbers[-2].replace(',', '')
             
             # Determine if credit or debit
@@ -621,10 +565,7 @@ def main():
         1. Upload your bank statement PDF file<br>
         2. Wait for processing to complete<br>
         3. Download the CSV file<br>
-        4. Open in Excel or any spreadsheet program<br><br>
-        <strong>Supported formats:</strong><br>
-        • Text-based PDFs (preferred)<br>
-        • Image-based/scanned PDFs (requires OCR)
+        4. Open in Excel or any spreadsheet program
     </div>
     """, unsafe_allow_html=True)
     
@@ -734,7 +675,6 @@ def main():
     <div style="text-align: center; color: #666;">
         <p>💡 Supports Nedbank and most standard bank statement formats</p>
         <p>🔒 Files are processed securely and not stored on our servers</p>
-        <p>📸 Automatically detects text-based or image-based PDFs</p>
     </div>
     """, unsafe_allow_html=True)
 
