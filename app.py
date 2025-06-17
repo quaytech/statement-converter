@@ -20,9 +20,7 @@ def extract_text_ocr(pdf):
 def extract_transactions_from_text(text):
     transactions = []
     transaction = None
-    # Date format: dd/mm/yyyy
     date_regex = r'(\d{2}/\d{2}/\d{4})'
-    # Flexible regex for rows: optional code, date, description, optional fees, debit, credit, balance
     trans_regex = re.compile(
         r'^(?:\S+\s+)?'                        # Optional Tran list no (ignore)
         r'(?P<date>\d{2}/\d{2}/\d{4})\s+'      # Date
@@ -37,9 +35,7 @@ def extract_transactions_from_text(text):
     lines = text.split('\n')
     for line in lines:
         line = line.strip()
-        # Any line with optional leading code, then a date, is a new transaction
         if re.match(f'^(?:\S+\s+)?{date_regex}', line):
-            # Save previous transaction, if any
             if transaction:
                 transactions.append(transaction)
             m = trans_regex.match(line)
@@ -58,7 +54,6 @@ def extract_transactions_from_text(text):
                 desc = ''
                 balance = ''
                 if len(parts) >= 2:
-                    # Ignore first part if not a date
                     if re.match(date_regex, parts[0]):
                         date = parts[0]
                         desc = parts[1]
@@ -76,14 +71,13 @@ def extract_transactions_from_text(text):
                     'Balance': balance
                 }
         else:
-            # Multiline description support
             if transaction:
                 transaction['Description'] += ' ' + line
     if transaction:
         transactions.append(transaction)
     return transactions
 
-# --- Clean & Format Transactions ---
+# --- Clean & Format Transactions (Arrow/Streamlit-safe) ---
 def clean_transactions(transactions):
     cleaned = []
     for t in transactions:
@@ -96,19 +90,19 @@ def clean_transactions(transactions):
         debit = clean_amt(debit)
         credit = clean_amt(credit)
         balance = clean_amt(t.get('Balance'))
-        # Determine Amount: blank if neither debit nor credit
-        amount = ''
+        # Use None for missing values (not empty string)
+        amount = None
         try:
             if debit and debit != '0.00':
                 amount = -abs(float(debit))
             elif credit and credit != '0.00':
                 amount = abs(float(credit))
         except Exception:
-            amount = ''
+            amount = None
         try:
-            balance_val = float(balance) if balance else ''
+            balance_val = float(balance) if balance else None
         except Exception:
-            balance_val = ''
+            balance_val = None
         cleaned.append({
             'Date': t['Date'],
             'Description': t['Description'].strip(),
@@ -120,7 +114,6 @@ def clean_transactions(transactions):
 # --- Combined PDF Processor ---
 def extract_transactions(pdf_file):
     with pdfplumber.open(pdf_file) as pdf:
-        # Try regular text extraction first
         raw_text = []
         for page in pdf.pages:
             page_text = page.extract_text()
