@@ -74,43 +74,29 @@ class BankStatementParser:
             for page_num, page in enumerate(pdf.pages, 1):
                 st.write(f"📄 Processing page {page_num}...")
                 
-                # Try text extraction with multiple methods
-                text = page.extract_text()
+                # Try multiple text extraction methods
+                text = None
+                extraction_methods = [
+                    lambda p: p.extract_text(),
+                    lambda p: p.extract_text(x_tolerance=3, y_tolerance=3),
+                    lambda p: p.extract_text(layout=True, x_tolerance=2, y_tolerance=2),
+                    lambda p: p.extract_text(layout=True),
+                    lambda p: self._extract_text_from_chars(p),
+                    lambda p: self._extract_text_from_words(p)
+                ]
                 
-                # Try alternative extraction methods if first attempt fails
-                if not text or len(text.strip()) < 50:
+                for method in extraction_methods:
                     try:
-                        text = page.extract_text(x_tolerance=3, y_tolerance=3)
+                        text = method(page)
+                        if text and len(text.strip()) > 100:
+                            break
                     except:
-                        pass
-                
-                if not text or len(text.strip()) < 50:
-                    try:
-                        text = page.extract_text(layout=True)
-                    except:
-                        pass
-                
-                if not text or len(text.strip()) < 50:
-                    try:
-                        chars = page.chars
-                        if chars:
-                            sorted_chars = sorted(chars, key=lambda x: (x.get('y0', 0), x.get('x0', 0)))
-                            text = ''.join([char.get('text', '') for char in sorted_chars])
-                    except:
-                        pass
-                
-                if not text or len(text.strip()) < 50:
-                    try:
-                        words = page.extract_words()
-                        if words:
-                            text = ' '.join([word.get('text', '') for word in words])
-                    except:
-                        pass
+                        continue
                 
                 # Check if we got meaningful text
                 has_meaningful_text = (text and 
-                                     len(text.strip()) > 20 and 
-                                     any(keyword in text.lower() for keyword in ['transaction', 'balance', 'date', 'account', 'nedbank', 'batch', 'dep', 'herd', 'current']))
+                                     len(text.strip()) > 50 and 
+                                     any(keyword in text.lower() for keyword in ['transaction', 'balance', 'date', 'account', 'nedbank', 'batch', 'dep', 'herd', 'current', 'tran list']))
                 
                 if has_meaningful_text:
                     st.write(f"✅ Text extracted from page {page_num} ({len(text)} characters)")
@@ -119,23 +105,62 @@ class BankStatementParser:
                     page_transactions = self._process_transaction_text(text)
                     transactions.extend(page_transactions)
                     
-                    # Also try table extraction
-                    tables = page.extract_tables()
-                    if tables:
-                        table_transactions = self._process_tables(tables)
-                        transactions.extend(table_transactions)
+                    # Also try table extraction as backup
+                    try:
+                        tables = page.extract_tables()
+                        if tables:
+                            table_transactions = self._process_tables(tables)
+                            transactions.extend(table_transactions)
+                    except:
+                        pass
                 
                 else:
                     st.write(f"❌ Could not extract meaningful text from page {page_num}")
+                    # Show what we did extract for debugging
+                    if text:
+                        st.write(f"Extracted {len(text)} characters but no banking keywords found")
+                        st.write(f"Sample: {text[:200]}...")
+                    else:
+                        st.write("No text could be extracted at all")
                     st.write("This appears to be a scanned/image-based PDF that requires OCR")
         
         return self._clean_and_format_transactions(transactions)
+    
+    def _extract_text_from_chars(self, page):
+        """Extract text from individual characters"""
+        try:
+            chars = page.chars
+            if chars:
+                # Sort characters by position for better text flow
+                sorted_chars = sorted(chars, key=lambda x: (x.get('y0', 0), x.get('x0', 0)))
+                text = ''.join([char.get('text', '') for char in sorted_chars])
+                return text
+        except:
+            pass
+        return None
+    
+    def _extract_text_from_words(self, page):
+        """Extract text from words"""
+        try:
+            words = page.extract_words()
+            if words:
+                # Sort words by position
+                sorted_words = sorted(words, key=lambda x: (x.get('y0', 0), x.get('x0', 0)))
+                text = ' '.join([word.get('text', '') for word in sorted_words])
+                return text
+        except:
+            pass
+        return None
     
     def _process_transaction_text(self, text):
         """Process text to find transactions in both 2021 and 2023 formats"""
         transactions = []
         lines = text.split('\n')
         
+        # Also try to find transactions in continuous text (for cases where line breaks are lost)
+        self._extract_from_continuous_text(text, transactions)
+        
+        # Process line by line
         for line in lines:
             line = line.strip()
             if not line:
@@ -148,6 +173,25 @@ class BankStatementParser:
                     transactions.append(transaction)
         
         return transactions
+    
+    def _extract_from_continuous_text(self, text, transactions):
+        """Extract transactions from continuous text when line breaks are lost"""
+        # Look for date patterns followed by transaction data
+        date_pattern = r'(\d{1,2}/\d{1,2}/\d{4})'
+        
+        # Split text on dates to find transaction blocks
+        parts = re.split(date_pattern, text)
+        
+        for i in range(1, len(parts), 2):  # Every odd index should be a date
+            if i + 1 < len(parts):
+                date = parts[i]
+                transaction_data = parts[i + 1]
+                
+                # Look for the next 200 characters after the date
+                transaction_line = date + ' ' + transaction_data[:200]
+                transaction = self._parse_transaction_line(transaction_line)
+                if transaction:
+                    transactions.append(transaction)
     
     def _parse_transaction_line(self, line):
         """Parse a single transaction line"""
@@ -172,12 +216,19 @@ class BankStatementParser:
         if any(phrase in remainder_lower for phrase in skip_phrases):
             return None
         
-        # Extract all numbers from the line
+        # Extract all numbers from the line (including decimals)
         numbers = re.findall(r'\b\d{1,3}(?:,\d{3})*\.\d{2}\b', remainder)
         if not numbers:
             numbers = re.findall(r'\b\d{1,3}(?:,\d{3})*\.?\d{0,2}\b', remainder)
         
-        if not numbers or len(numbers) == 0:
+        # Filter out very small numbers (likely fees or codes) and very large numbers (likely account numbers)
+        filtered_numbers = []
+        for num in numbers:
+            num_value = float(num.replace(',', ''))
+            if 0.01 <= num_value <= 999999999:  # Reasonable transaction range
+                filtered_numbers.append(num)
+        
+        if not filtered_numbers:
             return None
         
         # Extract description by removing numbers and cleaning up
@@ -185,32 +236,39 @@ class BankStatementParser:
         for num in numbers:
             description = description.replace(num, ' ')
         
-        # Remove transaction numbers and clean up
-        description = re.sub(r'\b\d{6}\b', '', description)  # Remove 6-digit transaction numbers
+        # Remove transaction numbers, codes, and clean up
+        description = re.sub(r'\b\d{6,}\b', '', description)  # Remove long number codes
+        description = re.sub(r'\b00\d{4,}\b', '', description)  # Remove transaction codes
         description = re.sub(r'[^\w\s-]', ' ', description)
         description = ' '.join(description.split())
         
-        if not description:
+        if not description or len(description.strip()) < 2:
             description = 'Transaction'
         
-        # Determine amount and balance based on the format
-        balance = numbers[-1].replace(',', '') if numbers else ''
+        # For 2023 format, identify amount and balance from Debits/Credits columns
+        # Balance is typically the last meaningful number
+        balance = filtered_numbers[-1].replace(',', '') if filtered_numbers else ''
         
         amount = ''
-        if len(numbers) >= 2:
-            # For lines with multiple numbers, try to identify the transaction amount
-            if len(numbers) == 2:
-                # Simple case: amount and balance
-                potential_amount = numbers[0].replace(',', '')
-            else:
-                # Multiple numbers - transaction amount is usually second-to-last
-                potential_amount = numbers[-2].replace(',', '')
+        if len(filtered_numbers) >= 2:
+            # Look for transaction amount
+            # In 2023 format: could be in Debits or Credits column
+            transaction_amount = None
             
-            # Determine if credit or debit
-            if self._is_credit(description):
-                amount = potential_amount
-            else:
-                amount = f"-{potential_amount}"
+            # Try to identify the transaction amount (not the balance)
+            for num in filtered_numbers[:-1]:  # Exclude the last number (balance)
+                num_value = float(num.replace(',', ''))
+                # Skip very small amounts (likely fees)
+                if num_value >= 1.0:
+                    transaction_amount = num.replace(',', '')
+                    break
+            
+            if transaction_amount:
+                # Determine if credit or debit based on description
+                if self._is_credit(description):
+                    amount = transaction_amount
+                else:
+                    amount = f"-{transaction_amount}"
         
         return {
             'date': date,
