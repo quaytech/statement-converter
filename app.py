@@ -81,7 +81,7 @@ def extract_transactions_from_text(text):
     credit_keywords = [
         'batch dep', 'deposit', 'business', 'herd2', 'herd', 'netsurit', 
         'top vending rebate', 'merch discount', 'reversal', 'opening balance',
-        'transfer in', 'credit', 'salary', 'refund', 'merch d'
+        'transfer in', 'credit', 'salary', 'refund', 'merch d', 'batchdep'
     ]
     
     def is_credit(description):
@@ -91,7 +91,26 @@ def extract_transactions_from_text(text):
     # Process line by line to find transactions
     lines = text.split('\n')
     
+    # Also split on common OCR issues where lines get merged
+    all_lines = []
     for line in lines:
+        # Split lines that have multiple dates (OCR often merges lines)
+        if line.count('/') >= 6:  # Multiple date patterns in one line
+            parts = re.split(r'(\d{1,2}/\d{1,2}/\d{4})', line)
+            current_line = ""
+            for part in parts:
+                if re.match(r'\d{1,2}/\d{1,2}/\d{4}', part):
+                    if current_line:
+                        all_lines.append(current_line.strip())
+                    current_line = part
+                else:
+                    current_line += part
+            if current_line:
+                all_lines.append(current_line.strip())
+        else:
+            all_lines.append(line)
+    
+    for line in all_lines:
         line = line.strip()
         if not line:
             continue
@@ -393,14 +412,17 @@ def main():
                     )
                     
                     # Update session state based on edited dataframe
-                    st.session_state.selected_rows = edited_df['Select'].tolist()
+                    if len(edited_df) == len(st.session_state.selected_rows):
+                        st.session_state.selected_rows = edited_df['Select'].tolist()
                     
                     # Download selected transactions
                     selected_count = sum(st.session_state.selected_rows)
                     st.info(f"Selected {selected_count} of {len(df)} transactions for download")
                     
                     if selected_count > 0:
-                        selected_transactions = [txn for i, txn in enumerate(cleaned) if st.session_state.selected_rows[i]]
+                        # Use the edited dataframe selections properly
+                        selected_indices = [i for i, selected in enumerate(st.session_state.selected_rows) if selected]
+                        selected_transactions = [cleaned[i] for i in selected_indices]
                         selected_df = pd.DataFrame(selected_transactions)
                         csv = selected_df.to_csv(index=False).encode('utf-8')
                         st.download_button(
