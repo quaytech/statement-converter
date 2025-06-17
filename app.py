@@ -127,10 +127,8 @@ def extract_transactions_from_text(text):
         for num in numbers:
             try:
                 num_value = float(num.replace(',', ''))
-                # Exclude typical fee amounts (4.30, 8.35, etc.) and very large numbers
-                if 10.0 <= num_value <= 999999999:  # Skip amounts under 10 (likely fees)
-                    filtered_numbers.append(num)
-                elif num_value >= 1000:  # Keep large amounts even if they could be fees
+                # Include all reasonable amounts, we'll filter fees later based on context
+                if 1.0 <= num_value <= 999999999:
                     filtered_numbers.append(num)
             except:
                 continue
@@ -159,27 +157,52 @@ def extract_transactions_from_text(text):
             except:
                 balance = None
         
+        # Determine amount and balance based on position in the line
+        # In 2023 format: Date | Description | Fees | Debits | Credits | Balance
+        # We need to identify which numbers are debits vs credits vs balance
+        
+        balance = None
+        if filtered_numbers:
+            try:
+                balance = float(filtered_numbers[-1].replace(',', ''))
+            except:
+                balance = None
+        
         amount = None
-        if len(filtered_numbers) >= 2:
-            # Find transaction amount (not balance)
-            # Skip the first number if it's a small fee (4.30, 8.35, etc.)
-            for num in filtered_numbers[:-1]:
-                try:
-                    num_value = float(num.replace(',', ''))
-                    # Skip typical bank fees
-                    if num_value in [4.30, 8.35, 19.00] or num_value < 10:
-                        continue
-                    # This is likely the real transaction amount
-                    if is_credit(description):
-                        amount = num_value
-                    else:
-                        amount = -num_value
-                    break
-                except:
-                    continue
-        elif len(filtered_numbers) == 1 and 'opening balance' in description.lower():
-            # Special case for opening balance - no amount, just balance
+        
+        # For opening balance, there's typically no transaction amount
+        if 'opening balance' in description.lower():
             amount = None
+        else:
+            # Try to identify debits vs credits based on position and context
+            # Credits: BATCH DEP, Herd2, deposits - should be positive
+            # Debits: PnP, fees, withdrawals - should be negative
+            
+            if len(filtered_numbers) >= 2:
+                # Look for the transaction amount (excluding balance)
+                potential_amounts = filtered_numbers[:-1]  # All except last (balance)
+                
+                # Find the largest amount that's not a fee
+                transaction_amount = None
+                for num in reversed(potential_amounts):  # Start from the end (closer to balance)
+                    try:
+                        num_value = float(num.replace(',', ''))
+                        # Skip obvious fees but keep real transaction amounts
+                        if num_value >= 20.0:  # Anything 20 or above is likely a real transaction
+                            transaction_amount = num_value
+                            break
+                        elif num_value >= 10.0 and len(potential_amounts) <= 2:  # If only small amounts, use them
+                            transaction_amount = num_value
+                            break
+                    except:
+                        continue
+                
+                if transaction_amount:
+                    # Determine sign based on transaction type
+                    if is_credit(description):
+                        amount = transaction_amount  # Credits are positive
+                    else:
+                        amount = -transaction_amount  # Debits are negative
         
         transactions.append({
             'Date': date,
@@ -313,8 +336,14 @@ def main():
                     # Create a display dataframe with selection checkboxes
                     display_data = []
                     for i, (_, row) in enumerate(df.iterrows()):
-                        amount_str = f"{row['Amount']:.2f}" if row['Amount'] is not None else ""
-                        balance_str = f"{row['Balance']:.2f}" if row['Balance'] is not None else ""
+                        # Handle NaN values properly
+                        amount_str = ""
+                        if row['Amount'] is not None and not pd.isna(row['Amount']):
+                            amount_str = f"{row['Amount']:.2f}"
+                        
+                        balance_str = ""
+                        if row['Balance'] is not None and not pd.isna(row['Balance']):
+                            balance_str = f"{row['Balance']:.2f}"
                         
                         display_data.append({
                             'Select': st.session_state.selected_rows[i],
