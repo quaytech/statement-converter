@@ -154,7 +154,7 @@ class BankStatementParser:
             
             header_row = None
             for i, row in enumerate(table):
-                if row and any(cell and any(keyword in str(cell).lower() for keyword in ['date', 'tran list', 'description']) for cell in row):
+                if row and any(cell and 'date' in str(cell).lower() for cell in row):
                     header_row = i
                     break
             
@@ -174,27 +174,15 @@ class BankStatementParser:
     def _parse_table_row(self, row):
         clean_row = [str(cell).strip() if cell else '' for cell in row]
         
-        # More flexible date pattern matching
-        date_patterns = [
-            r'\b(\d{1,2}/\d{1,2}/\d{4})\b',  # DD/MM/YYYY
-            r'\b(\d{1,2}/\d{1,2}/\d{2})\b',   # DD/MM/YY
-        ]
-        
         date = None
         for cell in clean_row:
-            for pattern in date_patterns:
-                date_match = re.search(pattern, str(cell))
-                if date_match:
-                    date = date_match.group(1)
-                    # Normalize date format
-                    date_parts = date.split('/')
-                    if len(date_parts) == 3:
-                        day, month, year = date_parts
-                        if len(year) == 2:
-                            year = f"20{year}"
-                        date = f"{day.zfill(2)}/{month.zfill(2)}/{year}"
-                    break
-            if date:
+            date_match = re.search(r'\b(\d{1,2}/\d{1,2}/\d{4})\b', cell)
+            if date_match:
+                date = date_match.group(1)
+                date_parts = date.split('/')
+                if len(date_parts) == 3:
+                    day, month, year = date_parts
+                    date = f"{day.zfill(2)}/{month.zfill(2)}/{year}"
                 break
         
         if not date:
@@ -261,7 +249,7 @@ class BankStatementParser:
             if not line:
                 continue
             
-            if any(keyword in line.lower() for keyword in ['transaction', 'date', 'description', 'balance', 'tran list']):
+            if any(keyword in line.lower() for keyword in ['transaction', 'date', 'description', 'balance']):
                 in_transaction_section = True
                 continue
             
@@ -282,18 +270,7 @@ class BankStatementParser:
         return transactions
     
     def _parse_text_line(self, line):
-        # More flexible date pattern matching
-        date_patterns = [
-            r'\b(\d{1,2}/\d{1,2}/\d{4})\b',  # DD/MM/YYYY
-            r'\b(\d{1,2}/\d{1,2}/\d{2})\b',   # DD/MM/YY
-        ]
-        
-        date_match = None
-        for pattern in date_patterns:
-            date_match = re.search(pattern, line)
-            if date_match:
-                break
-                
+        date_match = re.search(r'\b(\d{1,2}/\d{1,2}/\d{4})\b', line)
         if not date_match:
             return None
         
@@ -303,22 +280,15 @@ class BankStatementParser:
             return None
         
         date = date_match.group(1)
-        # Normalize date format
         date_parts = date.split('/')
         if len(date_parts) == 3:
             day, month, year = date_parts
-            if len(year) == 2:
-                year = f"20{year}"
             date = f"{day.zfill(2)}/{month.zfill(2)}/{year}"
         
         remainder = line.replace(date_match.group(0), '').strip()
         remainder = re.sub(r'^\d{6}\s*', '', remainder)
         
-        # Enhanced number detection for various formats
         numbers = re.findall(r'\b\d{1,3}(?:,\d{3})*\.?\d{0,2}\b', remainder)
-        # Also look for numbers without commas
-        if not numbers:
-            numbers = re.findall(r'\b\d+\.?\d{0,2}\b', remainder)
         
         description = remainder
         for num in numbers:
