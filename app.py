@@ -1,499 +1,372 @@
 import streamlit as st
-import pdfplumber
 import pandas as pd
+import requests
+import base64
+import time
 import re
-from io import BytesIO
-from PIL import Image
-import pytesseract
+from datetime import datetime
+import io
+import zipfile
+from pathlib import Path
 
-# Page configuration
-st.set_page_config(
-    page_title="Bank Statement Converter",
-    page_icon="🏦",
-    layout="wide"
-)
-
-# Custom CSS
-st.markdown("""
-<style>
-    .main-header {
-        text-align: center;
-        color: #2c3e50;
-        margin-bottom: 2rem;
-    }
-    .success-box {
-        padding: 1rem;
-        border-radius: 0.5rem;
-        background-color: #d4edda;
-        border: 1px solid #c3e6cb;
-        color: #155724;
-        margin: 1rem 0;
-    }
-    .error-box {
-        padding: 1rem;
-        border-radius: 0.5rem;
-        background-color: #f8d7da;
-        border: 1px solid #f5c6cb;
-        color: #721c24;
-        margin: 1rem 0;
-    }
-    .info-box {
-        padding: 1rem;
-        border-radius: 0.5rem;
-        background-color: #d1ecf1;
-        border: 1px solid #bee5eb;
-        color: #0c5460;
-        margin: 1rem 0;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# --- OCR Text Extraction (Fixed) ---
-def extract_text_ocr(pdf):
-    all_text = []
-    for page_num, page in enumerate(pdf.pages, 1):
-        st.write(f"🔍 OCR processing page {page_num}...")
-        try:
-            # Convert page to high-resolution image for better OCR
-            im = page.to_image(resolution=300)
-            pil_img = im.original
-            
-            # Use optimized OCR settings for bank statements
-            custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz.,-/: ()'
-            text = pytesseract.image_to_string(pil_img, config=custom_config)
-            
-            if text.strip():
-                st.write(f"✅ OCR extracted {len(text)} characters from page {page_num}")
-                all_text.append(text)
-            else:
-                st.write(f"❌ No text extracted from page {page_num}")
-                
-        except Exception as e:
-            st.write(f"❌ OCR error on page {page_num}: {str(e)}")
-            
-    return "\n".join(all_text)
-
-# --- Improved Transaction Parser (Fixed to handle opening balance) ---
-def extract_transactions_from_text(text):
-    transactions = []
-    
-    # Credit keywords for classification
-    credit_keywords = [
-        'batch dep', 'deposit', 'business', 'herd2', 'herd', 'netsurit', 
-        'top vending rebate', 'merch discount', 'reversal', 'opening balance',
-        'transfer in', 'credit', 'salary', 'refund', 'merch d', 'batchdep'
-    ]
-    
-    def is_credit(description):
-        desc_lower = description.lower()
-        return any(keyword in desc_lower for keyword in credit_keywords)
-    
-    # Process line by line to find transactions
-    lines = text.split('\n')
-    
-    # Also split on common OCR issues where lines get merged
-    all_lines = []
-    for line in lines:
-        # Split lines that have multiple dates (OCR often merges lines)
-        if line.count('/') >= 6:  # Multiple date patterns in one line
-            parts = re.split(r'(\d{1,2}/\d{1,2}/\d{4})', line)
-            current_line = ""
-            for part in parts:
-                if re.match(r'\d{1,2}/\d{1,2}/\d{4}', part):
-                    if current_line:
-                        all_lines.append(current_line.strip())
-                    current_line = part
-                else:
-                    current_line += part
-            if current_line:
-                all_lines.append(current_line.strip())
-        else:
-            all_lines.append(line)
-    
-    # Also process text with different splitting strategies to catch OCR errors
-    # Strategy 1: Split on multiple consecutive spaces (table columns)
-    table_lines = []
-    for line in all_lines:
-        if re.search(r'\d{1,2}/\d{1,2}/\d{4}', line):
-            # Split by multiple spaces to separate table columns
-            parts = re.split(r'\s{3,}', line)
-            if len(parts) >= 3:  # Date, Description, amounts
-                table_lines.append(' '.join(parts))
-            else:
-                table_lines.append(line)
-    
-    # Combine both approaches
-    all_processing_lines = all_lines + table_lines
-    
-    for line in all_processing_lines:
-        line = line.strip()
-        if not line:
-            continue
-            
-        # Look for lines with dates (handles both formats)
-        date_match = re.search(r'(\d{1,2}/\d{1,2}/\d{4})', line)
-        if not date_match:
-            continue
-            
-        date = date_match.group(1)
-        # Normalize date format
-        date_parts = date.split('/')
-        if len(date_parts) == 3:
-            day, month, year = date_parts
-            date = f"{day.zfill(2)}/{month.zfill(2)}/{year}"
+class BankStatementProcessor:
+    def __init__(self, pdfco_api_key):
+        self.pdfco_api_key = pdfco_api_key
         
-        # Remove date from line to get remainder
-        remainder = line.replace(date_match.group(0), '').strip()
+    def upload_to_pdfco(self, file_content, filename):
+        """Upload PDF file to PDF.co and get a URL"""
+        file_data = base64.b64encode(file_content).decode('utf-8')
+        
+        upload_url = "https://api.pdf.co/v1/file/upload/base64"
+        headers = {
+            'x-api-key': self.nikky.gibson@quay-tech.co.uk_ZyQGnhrmW9DuqJPyj4QI4eoNikmf6mW4MblyTZViW87dPDXY45TN0iNu3dFbL3jb,
+            'Content-Type': 'application/json'
+        }
+        
+        payload = {
+            'file': file_data,
+            'name': filename
+        }
+        
+        response = requests.post(upload_url, headers=headers, json=payload)
+        
+        if response.status_code == 200:
+            return response.json()['url']
+        else:
+            raise Exception(f"Failed to upload file: {response.status_code} - {response.text}")
+    
+    def extract_text_from_pdf(self, pdf_url):
+        """Extract text from PDF using PDF.co OCR"""
+        extract_url = "https://api.pdf.co/v1/pdf/convert/to/text"
+        headers = {
+            'x-api-key': self.pdfco_api_key,
+            'Content-Type': 'application/json'
+        }
+        
+        payload = {
+            'url': pdf_url,
+            'ocrLanguage': 'eng',
+            'async': False
+        }
+        
+        response = requests.post(extract_url, headers=headers, json=payload)
+        
+        if response.status_code == 200:
+            result = response.json()
+            text_url = result.get('url')
+            if text_url:
+                text_response = requests.get(text_url)
+                if text_response.status_code == 200:
+                    return text_response.text
+                else:
+                    raise Exception(f"Failed to download extracted text: {text_response.status_code}")
+            else:
+                raise Exception("No text URL returned from PDF.co")
+        else:
+            raise Exception(f"Failed to extract text: {response.status_code} - {response.text}")
+    
+    def parse_transaction_line(self, line):
+        """Parse a single transaction line"""
+        # Extract date - support multiple formats
+        date_match = re.search(r'(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})', line)
+        if not date_match:
+            return None
+        
+        date = date_match.group(1)
+        remainder = line.replace(date, '').strip()
         
         # Skip non-transaction entries
-        remainder_lower = remainder.lower()
-        skip_phrases = ['statement period', 'total pages', 'balance brought forward', 'balance carried forward']
-        if any(phrase in remainder_lower for phrase in skip_phrases):
-            continue
+        skip_phrases = [
+            'statement period', 'total pages', 'balance brought forward',
+            'balance carried forward', 'page', 'account number', 'sort code',
+            'opening balance', 'closing balance', 'total credits', 'total debits',
+            'statement date', 'account summary', 'previous statement'
+        ]
         
-        # Extract all numbers from the line
-        numbers = re.findall(r'\b\d{1,3}(?:,\d{3})*\.\d{2}\b', remainder)
-        if not numbers:
-            numbers = re.findall(r'\b\d{1,3}(?:,\d{3})*\.?\d{0,2}\b', remainder)
+        if any(phrase in remainder.lower() for phrase in skip_phrases):
+            return None
         
-        # Filter reasonable amounts and exclude small fee amounts
-        filtered_numbers = []
-        for num in numbers:
-            try:
-                num_value = float(num.replace(',', ''))
-                # Include all reasonable amounts, we'll filter fees later based on context
-                if 1.0 <= num_value <= 999999999:
-                    filtered_numbers.append(num)
-            except:
-                continue
+        # Extract monetary amounts
+        numbers = re.findall(r'-?\d{1,3}(?:,\d{3})*\.?\d{0,2}', remainder)
+        filtered_numbers = [
+            float(num.replace(',', '')) for num in numbers 
+            if 0.01 <= abs(float(num.replace(',', ''))) <= 999999999
+        ]
         
         if not filtered_numbers:
-            continue
+            return None
         
-        # Extract description by removing numbers and cleaning
+        # Extract description
         description = remainder
         for num in numbers:
             description = description.replace(num, ' ')
         
-        # Clean description more aggressively to remove OCR artifacts
-        description = re.sub(r'\b\d{6,}\b', '', description)  # Remove long codes
-        description = re.sub(r'\b[A-Z]{2,}\d+\b', '', description)  # Remove codes like T7ATT75
-        description = re.sub(r'\b\w{1,2}\d{1,3}\w{0,3}\b', '', description)  # Remove short alphanumeric codes
-        description = re.sub(r'[^\w\s-]', ' ', description)
-        description = ' '.join(description.split())
+        # Clean description
+        description = re.sub(r'\b\d{6,}\b', '', description)
+        description = re.sub(r'[^\w\s\-&]', ' ', description)
+        description = re.sub(r'\s+', ' ', description).strip()
         
-        # Remove common OCR artifacts
-        description = re.sub(r'\bT\d+ATT\s*\d*\b', '', description)  # Remove T7ATT 75 type artifacts
-        description = re.sub(r'\b[A-Z]+\d+[A-Z]*\b', '', description)  # Remove code patterns
-        description = ' '.join(description.split())
-        
-        if not description or len(description.strip()) < 2:
+        if not description or len(description) < 2:
             description = 'Transaction'
         
         # Determine amount and balance
-        balance = None
-        if filtered_numbers:
-            try:
-                balance = float(filtered_numbers[-1].replace(',', ''))
-            except:
-                balance = None
-        
-        # Determine amount and balance based on position in the line
-        # In 2023 format: Date | Description | Fees | Debits | Credits | Balance
-        # We need to identify which numbers are debits vs credits vs balance
-        
-        balance = None
-        if filtered_numbers:
-            try:
-                balance = float(filtered_numbers[-1].replace(',', ''))
-            except:
-                balance = None
-        
+        balance = filtered_numbers[-1]
         amount = None
         
-        # For opening balance, there's typically no transaction amount
-        if 'opening balance' in description.lower():
-            amount = None
-        else:
-            # Try to identify debits vs credits based on position and context
-            # Credits: BATCH DEP, Herd2, deposits - should be positive
-            # Debits: PnP, fees, withdrawals - should be negative
+        if len(filtered_numbers) >= 2:
+            transaction_amount = filtered_numbers[-2]
             
-            if len(filtered_numbers) >= 2:
-                # Look for the transaction amount (excluding balance)
-                potential_amounts = filtered_numbers[:-1]  # All except last (balance)
-                
-                # Find the largest amount that's not a fee
-                transaction_amount = None
-                for num in reversed(potential_amounts):  # Start from the end (closer to balance)
-                    try:
-                        num_value = float(num.replace(',', ''))
-                        # Skip obvious fees but keep real transaction amounts
-                        if num_value >= 20.0:  # Anything 20 or above is likely a real transaction
-                            transaction_amount = num_value
-                            break
-                        elif num_value >= 10.0 and len(potential_amounts) <= 2:  # If only small amounts, use them
-                            transaction_amount = num_value
-                            break
-                    except:
-                        continue
-                
-                if transaction_amount:
-                    # Determine sign based on transaction type
-                    if is_credit(description):
-                        amount = transaction_amount  # Credits are positive
-                    else:
-                        amount = -transaction_amount  # Debits are negative
+            # Determine if credit or debit
+            credit_keywords = [
+                'deposit', 'credit', 'transfer in', 'refund', 'reversal',
+                'payment received', 'interest', 'dividend', 'salary', 'wages',
+                'batch dep', 'business', 'herd2', 'herd'
+            ]
             
-            # Special handling for lines that look malformed by OCR
-            elif len(filtered_numbers) == 1 and not 'opening balance' in description.lower():
-                # This might be a credit transaction where OCR messed up the format
-                # Check if the single number could be a balance and infer the amount
-                single_num = float(filtered_numbers[0].replace(',', ''))
-                
-                # If description suggests it's a credit (like Herd2) and we have a reasonable balance
-                if is_credit(description) and single_num > 100:
-                    # This is likely a balance, we need to look at context to determine amount
-                    # For now, treat it as a balance-only entry and let the user fix it
-                    balance = single_num
-                    amount = None
+            debit_keywords = [
+                'withdrawal', 'atm', 'purchase', 'payment', 'fee', 'charge',
+                'direct debit', 'standing order', 'card payment', 'transfer out'
+            ]
+            
+            desc_lower = description.lower()
+            is_credit = any(keyword in desc_lower for keyword in credit_keywords)
+            is_debit = any(keyword in desc_lower for keyword in debit_keywords)
+            
+            if is_credit:
+                amount = abs(transaction_amount)
+            elif is_debit:
+                amount = -abs(transaction_amount)
+            else:
+                amount = transaction_amount
         
-        transactions.append({
+        return {
             'Date': date,
-            'Description': description.strip(),
+            'Description': description,
             'Amount': amount,
             'Balance': balance
-        })
+        }
     
-    return transactions
-
-# --- Clean & Format Transactions ---
-def clean_transactions(transactions):
-    seen = set()
-    cleaned = []
-    
-    for t in transactions:
-        if not t.get('Date') or not t.get('Description'):
-            continue
-            
-        # Create unique key to avoid duplicates
-        key = f"{t['Date']}_{t['Description'][:20]}_{t.get('Balance', '')}"
-        if key in seen:
-            continue
-        seen.add(key)
+    def parse_transactions(self, text):
+        """Parse transactions from extracted text"""
+        transactions = []
+        lines = text.split('\n')
         
-        cleaned.append({
-            'Date': t['Date'],
-            'Description': t['Description'],
-            'Amount': t['Amount'],
-            'Balance': t['Balance']
-        })
-    
-    # Sort by date
-    try:
-        from datetime import datetime
-        cleaned.sort(key=lambda x: datetime.strptime(x['Date'], '%d/%m/%Y'))
-    except:
-        pass
-    
-    return cleaned
-
-# --- Combined PDF Processor (Fixed to process ALL pages) ---
-def extract_transactions(pdf_file):
-    with pdfplumber.open(pdf_file) as pdf:
-        # First try text extraction on ALL pages
-        all_text = []
-        pages_with_text = []
-        
-        st.write(f"📄 Processing {len(pdf.pages)} pages...")
-        
-        for page_num, page in enumerate(pdf.pages, 1):
-            st.write(f"📄 Processing page {page_num}...")
-            
-            # Try text extraction first
-            page_text = page.extract_text()
-            if page_text and len(page_text.strip()) > 50:
-                # Check if it contains banking keywords
-                banking_keywords = ['transaction', 'balance', 'date', 'account', 'nedbank', 'batch', 'dep', 'herd', 'current', 'tran list', 'opening balance']
-                if any(keyword in page_text.lower() for keyword in banking_keywords):
-                    st.write(f"✅ Text extraction worked on page {page_num}")
-                    all_text.append(page_text)
-                    pages_with_text.append(page_num)
-                else:
-                    st.write(f"❌ No banking keywords found on page {page_num}")
-            else:
-                st.write(f"❌ Little/no text extracted from page {page_num}")
-        
-        # If we got some text, use it
-        if all_text:
-            st.write(f"✅ Using text extraction from pages: {pages_with_text}")
-            text = "\n".join(all_text)
-        else:
-            # Fall back to OCR for ALL pages
-            st.info("No selectable text found in PDF. Using OCR on all pages...")
-            text = extract_text_ocr(pdf)
-        
-        # Also try to clean up common OCR errors in the text before processing
-        # Remove obvious OCR artifacts that interfere with transaction parsing
-        text = re.sub(r'\bT\d+ATT\s*\d+\b', '', text)  # Remove T7ATT type artifacts
-        text = re.sub(r'\b[A-Z]{1,3}\d{1,4}[A-Z]{0,2}\b', ' ', text)  # Remove mixed alphanumeric codes
-        
-        if not text.strip():
-            st.error("Could not extract any text from PDF")
-            return []
-            
-        # Show sample of extracted text for debugging
-        st.write("📝 Sample of extracted text:")
-        st.text(text[:500] + "..." if len(text) > 500 else text)
-        
-        return extract_transactions_from_text(text)
-
-# --- Streamlit App ---
-def main():
-    st.markdown('<h1 class="main-header">🏦 Bank Statement PDF to CSV Converter</h1>', unsafe_allow_html=True)
-    
-    st.markdown("""
-    <div class="info-box">
-        <strong>Features:</strong><br>
-        • Works with both text-based and image-based PDFs<br>
-        • Processes ALL pages including opening balance<br>
-        • Uses OCR automatically when needed<br>
-        • Handles both 2021 and 2023 Nedbank formats
-    </div>
-    """, unsafe_allow_html=True)
-
-    uploaded_file = st.file_uploader("Upload Nedbank PDF", type=["pdf"])
-
-    if uploaded_file:
-        with st.spinner("Processing PDF..."):
-            try:
-                pdf_bytes = BytesIO(uploaded_file.read())
-                transactions = extract_transactions(pdf_bytes)
-                cleaned = clean_transactions(transactions)
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
                 
-                if cleaned:
-                    st.markdown(f"""
-                    <div class="success-box">
-                        <strong>✅ Success!</strong><br>
-                        Extracted {len(cleaned)} transactions from PDF
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-                    # Display with editing capability
-                    st.subheader("📊 Transaction Preview")
-                    st.markdown("**Review transactions before download:**")
-                    
-                    df = pd.DataFrame(cleaned)
-                    
-                    # Add selection capability
-                    if 'selected_rows' not in st.session_state:
-                        st.session_state.selected_rows = [True] * len(df)
-                    
-                    if len(st.session_state.selected_rows) != len(df):
-                        st.session_state.selected_rows = [True] * len(df)
-                    
-                    # Create a display dataframe with selection checkboxes
-                    display_data = []
-                    for i, (_, row) in enumerate(df.iterrows()):
-                        # Handle NaN values properly
-                        amount_str = ""
-                        if row['Amount'] is not None and not pd.isna(row['Amount']):
-                            amount_str = f"{row['Amount']:.2f}"
-                        
-                        balance_str = ""
-                        if row['Balance'] is not None and not pd.isna(row['Balance']):
-                            balance_str = f"{row['Balance']:.2f}"
-                        
-                        display_data.append({
-                            'Select': st.session_state.selected_rows[i],
-                            'Date': row['Date'],
-                            'Description': row['Description'],
-                            'Amount': amount_str,
-                            'Balance': balance_str
-                        })
-                    
-                    # Selection controls
-                    col1, col2 = st.columns([1, 3])
-                    with col1:
-                        select_all = st.checkbox("Select All", value=all(st.session_state.selected_rows))
-                        if select_all != all(st.session_state.selected_rows):
-                            st.session_state.selected_rows = [select_all] * len(df)
-                            st.rerun()
-                    
-                    # Create the editable dataframe
-                    edited_df = st.data_editor(
-                        pd.DataFrame(display_data),
-                        column_config={
-                            "Select": st.column_config.CheckboxColumn(
-                                "Include",
-                                help="Select transactions to include in CSV",
-                                default=True,
-                            ),
-                            "Date": st.column_config.TextColumn(
-                                "Date",
-                                disabled=True,
-                            ),
-                            "Description": st.column_config.TextColumn(
-                                "Description", 
-                                disabled=True,
-                            ),
-                            "Amount": st.column_config.TextColumn(
-                                "Amount",
-                                disabled=True,
-                            ),
-                            "Balance": st.column_config.TextColumn(
-                                "Balance",
-                                disabled=True,
-                            ),
-                        },
-                        disabled=["Date", "Description", "Amount", "Balance"],
-                        hide_index=True,
-                        use_container_width=True
-                    )
-                    
-                    # Update session state based on edited dataframe
-                    if len(edited_df) == len(st.session_state.selected_rows):
-                        st.session_state.selected_rows = edited_df['Select'].tolist()
-                    
-                    # Download selected transactions
-                    selected_count = sum(st.session_state.selected_rows)
-                    st.info(f"Selected {selected_count} of {len(df)} transactions for download")
-                    
-                    if selected_count > 0:
-                        # Use the edited dataframe selections properly
-                        selected_indices = [i for i, selected in enumerate(st.session_state.selected_rows) if selected]
-                        selected_transactions = [cleaned[i] for i in selected_indices]
-                        selected_df = pd.DataFrame(selected_transactions)
-                        csv = selected_df.to_csv(index=False).encode('utf-8')
-                        st.download_button(
-                            f"💾 Download CSV ({selected_count} transactions)",
-                            csv,
-                            "nedbank_transactions.csv",
-                            "text/csv",
-                            type="primary"
-                        )
-                    else:
-                        st.warning("Please select at least one transaction to download.")
-                        
-                else:
-                    st.markdown("""
-                    <div class="error-box">
-                        <strong>❌ No transactions found</strong><br>
-                        The statement format may be different or the text extraction failed.
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-            except Exception as e:
-                st.error(f"Error processing PDF: {str(e)}")
+            transaction = self.parse_transaction_line(line)
+            if transaction:
+                transactions.append(transaction)
+        
+        # Remove duplicates and sort
+        transactions = self.clean_and_sort_transactions(transactions)
+        return transactions
+    
+    def clean_and_sort_transactions(self, transactions):
+        """Remove duplicates and sort transactions"""
+        # Remove duplicates
+        seen = set()
+        unique_transactions = []
+        
+        for txn in transactions:
+            key = f"{txn['Date']}_{txn['Description'][:30]}_{txn['Balance']}_{txn['Amount']}"
+            if key not in seen:
+                seen.add(key)
+                unique_transactions.append(txn)
+        
+        # Sort by date
+        unique_transactions.sort(key=lambda x: self.parse_date(x['Date']))
+        
+        return unique_transactions
+    
+    def parse_date(self, date_str):
+        """Parse date string to datetime object"""
+        parts = re.split(r'[\/\-]', date_str)
+        
+        if len(parts[0]) == 4:
+            return datetime(int(parts[0]), int(parts[1]), int(parts[2]))
+        else:
+            return datetime(int(parts[2]), int(parts[1]), int(parts[0]))
+    
+    def process_pdf(self, file_content, filename):
+        """Process a single PDF file"""
+        try:
+            # Upload to PDF.co
+            pdf_url = self.upload_to_pdfco(file_content, filename)
+            
+            # Extract text
+            extracted_text = self.extract_text_from_pdf(pdf_url)
+            
+            # Parse transactions
+            transactions = self.parse_transactions(extracted_text)
+            
+            if not transactions:
+                return None, "No transactions found in the PDF"
+            
+            # Create DataFrame
+            df = pd.DataFrame(transactions)
+            
+            # Format amounts
+            df['Amount'] = df['Amount'].apply(lambda x: f"{x:.2f}" if x is not None else "")
+            df['Balance'] = df['Balance'].apply(lambda x: f"{x:.2f}")
+            
+            return df, None
+            
+        except Exception as e:
+            return None, str(e)
 
-    st.markdown("""
-    ---
-    <div style="text-align: center; color: #666;">
-        <p>💡 <strong>Tip:</strong> For image-based PDFs, OCR will be used automatically</p>
-        <p>🔒 Files are processed securely and not stored</p>
-        <p>📸 Supports both text-based and scanned PDFs</p>
-    </div>
-    """, unsafe_allow_html=True)
+def main():
+    st.set_page_config(
+        page_title="Bank Statement Processor",
+        page_icon="🏦",
+        layout="wide"
+    )
+    
+    st.title("🏦 Bank Statement PDF to CSV Converter")
+    st.markdown("Upload your bank statement PDFs and convert them to CSV format with automatic transaction parsing.")
+    
+    # Sidebar for API key
+    with st.sidebar:
+        st.header("⚙️ Configuration")
+        api_key = st.text_input(
+            "PDF.co API Key",
+            type="password",
+            help="Get your free API key from https://pdf.co"
+        )
+        
+        if not api_key:
+            st.warning("Please enter your PDF.co API key to continue")
+            st.info("💡 PDF.co offers a free tier with 100 API calls per month")
+            st.stop()
+    
+    # Main interface
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        st.header("📁 Upload PDF Files")
+        uploaded_files = st.file_uploader(
+            "Choose PDF bank statements",
+            type=['pdf'],
+            accept_multiple_files=True,
+            help="You can upload multiple PDF files at once"
+        )
+        
+        if uploaded_files:
+            st.success(f"📄 {len(uploaded_files)} file(s) uploaded")
+            
+            # Show file details
+            for file in uploaded_files:
+                st.text(f"• {file.name} ({file.size:,} bytes)")
+    
+    with col2:
+        st.header("🔄 Processing")
+        
+        if uploaded_files and st.button("🚀 Process All Files", type="primary"):
+            processor = BankStatementProcessor(api_key)
+            
+            # Progress tracking
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            results = {}
+            successful_files = []
+            failed_files = []
+            
+            for i, uploaded_file in enumerate(uploaded_files):
+                status_text.text(f"Processing {uploaded_file.name}...")
+                
+                # Read file content
+                file_content = uploaded_file.read()
+                
+                # Process the PDF
+                df, error = processor.process_pdf(file_content, uploaded_file.name)
+                
+                if df is not None:
+                    results[uploaded_file.name] = df
+                    successful_files.append(uploaded_file.name)
+                    st.success(f"✅ {uploaded_file.name}: {len(df)} transactions found")
+                else:
+                    failed_files.append((uploaded_file.name, error))
+                    st.error(f"❌ {uploaded_file.name}: {error}")
+                
+                # Update progress
+                progress_bar.progress((i + 1) / len(uploaded_files))
+            
+            status_text.text("✨ Processing complete!")
+            
+            # Summary
+            st.header("📊 Results Summary")
+            col_success, col_failed = st.columns(2)
+            
+            with col_success:
+                st.metric("✅ Successful", len(successful_files))
+            
+            with col_failed:
+                st.metric("❌ Failed", len(failed_files))
+    
+    # Display results
+    if 'results' in locals() and results:
+        st.header("📋 Transaction Data")
+        
+        # Tabs for each file
+        if len(results) == 1:
+            filename = list(results.keys())[0]
+            df = results[filename]
+            st.subheader(f"📄 {filename}")
+            st.dataframe(df, use_container_width=True)
+            
+            # Download button for single file
+            csv = df.to_csv(index=False)
+            csv_filename = filename.replace('.pdf', '_transactions.csv')
+            st.download_button(
+                label=f"💾 Download {csv_filename}",
+                data=csv,
+                file_name=csv_filename,
+                mime='text/csv'
+            )
+        
+        else:
+            # Multiple files - create tabs
+            tabs = st.tabs([f"📄 {name}" for name in results.keys()])
+            
+            for tab, (filename, df) in zip(tabs, results.items()):
+                with tab:
+                    st.dataframe(df, use_container_width=True)
+                    
+                    # Individual download
+                    csv = df.to_csv(index=False)
+                    csv_filename = filename.replace('.pdf', '_transactions.csv')
+                    st.download_button(
+                        label=f"💾 Download {csv_filename}",
+                        data=csv,
+                        file_name=csv_filename,
+                        mime='text/csv',
+                        key=f"download_{filename}"
+                    )
+            
+            # Download all as ZIP
+            st.header("📦 Download All")
+            if st.button("📥 Download All CSVs as ZIP"):
+                zip_buffer = io.BytesIO()
+                
+                with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                    for filename, df in results.items():
+                        csv = df.to_csv(index=False)
+                        csv_filename = filename.replace('.pdf', '_transactions.csv')
+                        zip_file.writestr(csv_filename, csv)
+                
+                st.download_button(
+                    label="💾 Download ZIP File",
+                    data=zip_buffer.getvalue(),
+                    file_name="bank_statements_csvs.zip",
+                    mime="application/zip"
+                )
+    
+    # Footer
+    st.markdown("---")
+    st.markdown("💡 **Tip**: This tool works with both text-based and image-based PDF bank statements using OCR technology.")
 
 if __name__ == "__main__":
     main()

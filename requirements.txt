@@ -4,3 +4,4 @@ pandas
 pytesseract
 PyMuPDF
 pillow
+requests
