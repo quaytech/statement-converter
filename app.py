@@ -110,7 +110,22 @@ def extract_transactions_from_text(text):
         else:
             all_lines.append(line)
     
+    # Also process text with different splitting strategies to catch OCR errors
+    # Strategy 1: Split on multiple consecutive spaces (table columns)
+    table_lines = []
     for line in all_lines:
+        if re.search(r'\d{1,2}/\d{1,2}/\d{4}', line):
+            # Split by multiple spaces to separate table columns
+            parts = re.split(r'\s{3,}', line)
+            if len(parts) >= 3:  # Date, Description, amounts
+                table_lines.append(' '.join(parts))
+            else:
+                table_lines.append(line)
+    
+    # Combine both approaches
+    all_processing_lines = all_lines + table_lines
+    
+    for line in all_processing_lines:
         line = line.strip()
         if not line:
             continue
@@ -160,9 +175,16 @@ def extract_transactions_from_text(text):
         for num in numbers:
             description = description.replace(num, ' ')
         
-        # Clean description
+        # Clean description more aggressively to remove OCR artifacts
         description = re.sub(r'\b\d{6,}\b', '', description)  # Remove long codes
+        description = re.sub(r'\b[A-Z]{2,}\d+\b', '', description)  # Remove codes like T7ATT75
+        description = re.sub(r'\b\w{1,2}\d{1,3}\w{0,3}\b', '', description)  # Remove short alphanumeric codes
         description = re.sub(r'[^\w\s-]', ' ', description)
+        description = ' '.join(description.split())
+        
+        # Remove common OCR artifacts
+        description = re.sub(r'\bT\d+ATT\s*\d*\b', '', description)  # Remove T7ATT 75 type artifacts
+        description = re.sub(r'\b[A-Z]+\d+[A-Z]*\b', '', description)  # Remove code patterns
         description = ' '.join(description.split())
         
         if not description or len(description.strip()) < 2:
@@ -222,6 +244,19 @@ def extract_transactions_from_text(text):
                         amount = transaction_amount  # Credits are positive
                     else:
                         amount = -transaction_amount  # Debits are negative
+            
+            # Special handling for lines that look malformed by OCR
+            elif len(filtered_numbers) == 1 and not 'opening balance' in description.lower():
+                # This might be a credit transaction where OCR messed up the format
+                # Check if the single number could be a balance and infer the amount
+                single_num = float(filtered_numbers[0].replace(',', ''))
+                
+                # If description suggests it's a credit (like Herd2) and we have a reasonable balance
+                if is_credit(description) and single_num > 100:
+                    # This is likely a balance, we need to look at context to determine amount
+                    # For now, treat it as a balance-only entry and let the user fix it
+                    balance = single_num
+                    amount = None
         
         transactions.append({
             'Date': date,
@@ -297,6 +332,11 @@ def extract_transactions(pdf_file):
             # Fall back to OCR for ALL pages
             st.info("No selectable text found in PDF. Using OCR on all pages...")
             text = extract_text_ocr(pdf)
+        
+        # Also try to clean up common OCR errors in the text before processing
+        # Remove obvious OCR artifacts that interfere with transaction parsing
+        text = re.sub(r'\bT\d+ATT\s*\d+\b', '', text)  # Remove T7ATT type artifacts
+        text = re.sub(r'\b[A-Z]{1,3}\d{1,4}[A-Z]{0,2}\b', ' ', text)  # Remove mixed alphanumeric codes
         
         if not text.strip():
             st.error("Could not extract any text from PDF")
